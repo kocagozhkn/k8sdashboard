@@ -571,7 +571,7 @@ export default function App() {
   const [graphData,setGraphData]=useState(null);
   const [selected,setSelected]=useState(null);
   const [nsFilter,setNsFilter]=useState("default");
-  const [typeFilters,setTypeFilters]=useState(new Set(Object.keys(KINDS)));
+  const [typeFilters,setTypeFilters]=useState(() => new Set(["Pod"]));
   const [nameFilter,setNameFilter]=useState("");
   const [healthFilter,setHealthFilter]=useState("all");
   const [rawInput,setRawInput]=useState("");
