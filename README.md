@@ -53,6 +53,14 @@ docker push <registry>/k8s-topology:latest
 
 Update the `image:` field in `k8s-manifest.yaml` for your registry.
 
+**One-shot release** (local git push + Docker + ACR + `kubectl apply` + rollout), with defaults for this project’s registry and `topology` namespace:
+
+```bash
+npm run release
+```
+
+Override if needed: `K8S_TOPOLOGY_REGISTRY`, `K8S_TOPOLOGY_IMAGE`, `K8S_TOPOLOGY_NS`, `K8S_TOPOLOGY_DEPLOY`.
+
 ## Deploy to Kubernetes
 
 ```bash
