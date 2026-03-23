@@ -10,6 +10,13 @@ import {
   clearKubeconfigStorage,
 } from "./kubeconfig-utils.js";
 
+/** Pod + Ingress üzerinden açıldığında (Vite dev değil) */
+function isDeployedOnKubernetesIngress() {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return h !== "localhost" && h !== "127.0.0.1";
+}
+
 const KINDS = {
   Ingress:               { color: "#A855F7", tag: "ING" },
   Service:               { color: "#22C55E", tag: "SVC" },
@@ -362,6 +369,8 @@ export default function App() {
   const [kubeconfigYaml,setKubeconfigYaml]=useState("");
   const [kubeContexts,setKubeContexts]=useState([]);
   const [apiFetchHeaders,setApiFetchHeaders]=useState({});
+  const [inClusterBootstrap,setInClusterBootstrap]=useState(isDeployedOnKubernetesIngress);
+  const autoConnectDoneRef=useRef(false);
   const fileInputRef=useRef(null);
   const svgRef=useRef(null);
 
@@ -412,6 +421,29 @@ export default function App() {
     try{setGraphData(parseKubectl(JSON.stringify({kind:"List",items:results})));setSelected(null);setNsFilter("all");setScreen("graph");}catch(e){setErr(e.message);}
     setLoading(false);
   };
+
+  useEffect(()=>{
+    if(!isDeployedOnKubernetesIngress()){
+      setInClusterBootstrap(false);
+      return;
+    }
+    if(autoConnectDoneRef.current) return;
+    autoConnectDoneRef.current=true;
+    const base=`${window.location.origin.replace(/\/$/,"")}/k8s-api`;
+    setApiUrl(base);
+    setApiFetchHeaders({});
+    const internalId=CLUSTER_PRESETS.find(p=>p.id==="cortex-internal-aks")?.id;
+    if(internalId) setClusterPresetId(internalId);
+    (async()=>{
+      try{
+        await fetchAPI(base,{headers:{}});
+      }finally{
+        setInClusterBootstrap(false);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnızca mount; fetchAPI bilinçli sabit
+  },[]);
+
   const toggleKind=k=>setTypeFilters(prev=>{const s=new Set(prev);s.has(k)?s.delete(k):s.add(k);return s;});
 
   const btn=(label,action,bg,fg="#fff")=>(
@@ -419,6 +451,15 @@ export default function App() {
   );
   const ghostBtn=(label,action)=>(
     <button onClick={action} style={{background:"#0F172A",border:"1px solid #1E293B",color:"#94A3B8",borderRadius:8,padding:"9px 18px",cursor:"pointer",fontSize:13}}>{label}</button>
+  );
+
+  if(inClusterBootstrap) return (
+    <div style={{background:"#020817",minHeight:"100vh",color:"#E2E8F0",fontFamily:"system-ui,sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,padding:24}}>
+      <div style={{width:40,height:40,border:"3px solid #1E293B",borderTopColor:"#6366F1",borderRadius:"50%",animation:"k8s-spin .8s linear infinite"}}/>
+      <style>{`@keyframes k8s-spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{fontSize:15,fontWeight:600,color:"#CBD5E1"}}>Bulunduğunuz kümenin API’sine bağlanılıyor…</div>
+      <div style={{fontSize:12,color:"#64748B",maxWidth:360,textAlign:"center"}}>Pod içi proxy (<code style={{color:"#94A3B8"}}>/k8s-api</code>) ile otomatik keşif</div>
+    </div>
   );
 
   if(screen==="home") return (
@@ -514,7 +555,7 @@ export default function App() {
         </div>
         <div style={{borderTop:"1px solid #1E293B",paddingTop:16}}>
           <div style={{fontSize:11,color:"#22C55E",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>kubeconfig</div>
-          <p style={{fontSize:12,color:"#64748B",margin:"0 0 10px",lineHeight:1.5}}>Tarayıcı güvenliği nedeniyle <b style={{color:"#94A3B8"}}>~/.kube/config</b> otomatik okunmaz. İçeriği yapıştırın veya dosyayı seçin. Token’lı context’ler üstteki listede görünür; doğrudan API çağrısı birçok kümede <b style={{color:"#94A3B8"}}>CORS</b> yüzünden başarısız olur — o zaman <code style={{color:"#E2E8F0",background:"#020817",padding:"2px 6px",borderRadius:4}}>kubectl proxy</code> kullanın.</p>
+          <p style={{fontSize:12,color:"#64748B",margin:"0 0 10px",lineHeight:1.5}}>Bu uygulama <b style={{color:"#94A3B8"}}>Kubernetes içinde</b> çalışırken ana sayfada otomatik olarak pod proxy (<code style={{color:"#94A3B8"}}>/k8s-api</code>) ile aynı kümeye bağlanır. Yerelde <b style={{color:"#94A3B8"}}>~/.kube/config</b> tarayıcıdan okunamaz; yapıştırın veya dosya seçin. Token’lı context’ler listede görünür; doğrudan API’de <b style={{color:"#94A3B8"}}>CORS</b> sık engeller — o zaman <code style={{color:"#E2E8F0",background:"#020817",padding:"2px 6px",borderRadius:4}}>kubectl proxy</code> kullanın.</p>
           <input ref={fileInputRef} type="file" accept=".yaml,.yml,.config,text/*" style={{display:"none"}} onChange={async(e)=>{
             const f=e.target.files?.[0];
             if(!f)return;
