@@ -1,0 +1,467 @@
+openapi: 3.1.0
+info:
+  title: agent-hub-service
+  version: 0.1.0
+  description: Agent registry, model deployments, and guardrails (hub control plane).
+servers:
+  - url: http://localhost:8086
+    description: agent-hub-service direct
+  - url: http://localhost:8080
+    description: via api-gateway (same paths)
+tags:
+  - name: health
+  - name: agents
+  - name: models
+  - name: guardrails
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      responses:
+        "200":
+          description: OK
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness
+      responses:
+        "200":
+          description: OK
+        "503":
+          description: Not ready
+  /agents:
+    get:
+      tags: [agents]
+      summary: List Agents
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentList"
+    post:
+      tags: [agents]
+      summary: Create Agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /agents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      tags: [agents]
+      summary: Get Agent
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [agents]
+      summary: Update Agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [agents]
+      summary: Delete Agent
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /agents/{id}/versions:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+    get:
+      tags: [agents]
+      summary: List Agent Versions
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentVersionList"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /agents/{id}/versions/{version}:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/VersionLabel"
+    get:
+      tags: [agents]
+      summary: Get Agent Version
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentVersion"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /agents/{id}/versions/{version}/restore:
+    parameters:
+      - $ref: "#/components/parameters/AgentId"
+      - $ref: "#/components/parameters/VersionLabel"
+    post:
+      tags: [agents]
+      summary: Restore Agent Version
+      description: Restores agent configuration from the given version (stub copies snapshot to current).
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /models:
+    get:
+      tags: [models]
+      summary: List Deployed Models
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployedModelList"
+  /models/catalog:
+    get:
+      tags: [models]
+      summary: List Catalog Models
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogModelList"
+  /models/deployments:
+    post:
+      tags: [models]
+      summary: Deploy Model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployModelRequest"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployedModel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /models/{model_name}/capabilities:
+    parameters:
+      - name: model_name
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [models]
+      summary: Get Model Capabilities
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelCapabilities"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /models/{deployment_name}:
+    parameters:
+      - name: deployment_name
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      tags: [models]
+      summary: Delete Deployment
+      description: Removes a model deployment by deployment name (must not collide with reserved paths catalog or deployments).
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /guardrails:
+    get:
+      tags: [guardrails]
+      summary: List Guardrails
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GuardrailList"
+    post:
+      tags: [guardrails]
+      summary: Create Guardrail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGuardrailRequest"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Guardrail"
+  /guardrails/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [guardrails]
+      summary: Get Guardrail
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Guardrail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [guardrails]
+      summary: Delete Guardrail
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  parameters:
+    AgentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    VersionLabel:
+      name: version
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+  schemas:
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: string
+    Agent:
+      type: object
+      required: [id, name, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CreateAgentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+    UpdateAgentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+    AgentList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Agent"
+        total:
+          type: integer
+    AgentVersion:
+      type: object
+      required: [version, agent_id, created_at]
+      properties:
+        version:
+          type: string
+        agent_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        snapshot:
+          type: object
+          additionalProperties: true
+    AgentVersionList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentVersion"
+    DeployedModel:
+      type: object
+      required: [deployment_name, model_name, status]
+      properties:
+        deployment_name:
+          type: string
+        model_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, failed]
+        created_at:
+          type: string
+          format: date-time
+    DeployedModelList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeployedModel"
+    CatalogModel:
+      type: object
+      required: [name, provider]
+      properties:
+        name:
+          type: string
+        provider:
+          type: string
+        context_window:
+          type: integer
+    CatalogModelList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogModel"
+    DeployModelRequest:
+      type: object
+      required: [deployment_name, model_name]
+      properties:
+        deployment_name:
+          type: string
+        model_name:
+          type: string
+    ModelCapabilities:
+      type: object
+      properties:
+        model_name:
+          type: string
+        modalities:
+          type: array
+          items:
+            type: string
+        max_tokens:
+          type: integer
+        context_window:
+          type: integer
+    Guardrail:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        rules:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+    CreateGuardrailRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        rules:
+          type: array
+          items:
+            type: string
+    GuardrailList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Guardrail"

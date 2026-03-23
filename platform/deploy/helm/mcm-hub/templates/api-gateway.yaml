@@ -44,6 +44,8 @@ spec:
               value: ":8080"
             - name: CLUSTER_SERVICE_URL
               value: http://{{ include "mcm-hub.fullname" . }}-cluster-service:8081
+            - name: AGENT_HUB_SERVICE_URL
+              value: http://{{ include "mcm-hub.fullname" . }}-agent-hub-service:8086
           readinessProbe:
             httpGet:
               path: /healthz

@@ -1,16 +1,17 @@
 # Multi-Cluster Management Platform (Hub)
 
-Centralized multi-cluster control plane scaffold: **cluster-service** is fully implemented; other microservices are minimal health servers until expanded.
+Centralized multi-cluster control plane scaffold: **cluster-service** is fully implemented; **agent-hub-service** exposes agents/models/guardrails APIs (in-memory stub); other microservices are minimal health servers until expanded.
 
 ## Repository layout
 
 ```
 platform/
-  api/openapi/           OpenAPI 3 specs
+  api/openapi/           OpenAPI 3 specs (cluster-service, agent-hub-service)
   deploy/helm/mcm-hub/   Umbrella Helm chart
   docs/ARCHITECTURE.md
   services/
     cluster-service/     Go — cluster registry & health metadata
+    agent-hub-service/   Go — agents, model deployments, guardrails (in-memory stub)
     api-gateway/         Go — reverse proxy (expand to auth, rate limit)
     auth-service/        Go — /health only (OIDC next)
     gitops-service/      Go — /health only
@@ -27,7 +28,8 @@ docker compose up --build
 ```
 
 - **cluster-service:** http://localhost:8081  
-- **api-gateway:** http://localhost:8080/api/v1/clusters (proxies to cluster-service)  
+- **agent-hub-service:** http://localhost:8086 (OpenAPI: `api/openapi/agent-hub-service.yaml`)  
+- **api-gateway:** http://localhost:8080 — `/api/v1/*` → cluster-service; `/agents`, `/models`, `/guardrails` → agent-hub-service  
 - **Postgres:** localhost:5432 (`mcm` / `mcm` / db `mcm`)  
 - **NATS:** localhost:4222  
 
@@ -53,10 +55,25 @@ curl -sS "http://localhost:8080/api/v1/clusters?limit=50&offset=0" \
   -H "X-Tenant-ID: $TENANT" | jq .
 ```
 
+### Try agent-hub (via gateway)
+
+```bash
+curl -sS http://localhost:8080/agents | jq .
+curl -sS -X POST http://localhost:8080/agents -H 'Content-Type: application/json' \
+  -d '{"name":"demo-agent","description":"hello"}' | jq .
+```
+
 ## Run cluster-service tests (no Docker DB required for unit tests)
 
 ```bash
 cd platform/services/cluster-service
+go test ./...
+```
+
+## Run agent-hub-service tests
+
+```bash
+cd platform/services/agent-hub-service
 go test ./...
 ```
 

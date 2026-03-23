@@ -3,6 +3,17 @@
 global:
   namespace: mcm-system
 
+agentHubService:
+  image: mcm/agent-hub-service:0.1.0
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
 clusterService:
   image: mcm/cluster-service:0.1.0
   replicas: 2

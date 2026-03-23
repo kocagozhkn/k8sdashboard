@@ -35,3 +35,17 @@ jobs:
         with:
           go-version: "1.22"
       - run: go mod tidy && go build -o /dev/null .
+
+  agent-hub-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/services/agent-hub-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go mod download
+      - run: go test ./... -count=1
+      - run: go vet ./...

@@ -603,6 +603,16 @@ export default function App() {
   const [podLogErr,setPodLogErr]=useState("");
   const [podLogContainer,setPodLogContainer]=useState("");
   const [podLogTick,setPodLogTick]=useState(0);
+  const [rightPanelWidth,setRightPanelWidth]=useState(()=>{
+    if (typeof window === "undefined") return 278;
+    try {
+      const raw = sessionStorage.getItem("k8s-topology-right-panel-px");
+      const n = raw ? parseInt(raw, 10) : NaN;
+      if (Number.isFinite(n) && n >= 200 && n <= 900) return n;
+    } catch { /* */ }
+    return 278;
+  });
+  const rightPanelDragWRef = useRef(278);
   const autoConnectDoneRef=useRef(false);
   const fetchAPIRef=useRef(async()=>{});
   const fileInputRef=useRef(null);
@@ -622,6 +632,34 @@ export default function App() {
     setNameFilter("");
     setHealthFilter("all");
   },[graphData]);
+
+  useEffect(()=>{ rightPanelDragWRef.current = rightPanelWidth; }, [rightPanelWidth]);
+
+  const onRightPanelResizeStart = useCallback((e)=>{
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = rightPanelDragWRef.current;
+    const maxW = typeof window !== "undefined" ? Math.min(900, Math.floor(window.innerWidth * 0.72)) : 900;
+    const minW = 200;
+    const onMove = (ev)=>{
+      const nw = Math.min(maxW, Math.max(minW, startW + (startX - ev.clientX)));
+      rightPanelDragWRef.current = nw;
+      setRightPanelWidth(nw);
+    };
+    const onUp = ()=>{
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try {
+        sessionStorage.setItem("k8s-topology-right-panel-px", String(rightPanelDragWRef.current));
+      } catch { /* */ }
+    };
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   const shapeFiltered=useMemo(()=>{
     if(!graphData) return {nodes:[],edges:[]};
@@ -1235,8 +1273,25 @@ export default function App() {
         </div>}
       </div>
 
+      {/* Right panel resize (drag left/right) */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Sağ panel genişliği"
+        title="Sürükleyerek genişlet"
+        onMouseDown={onRightPanelResizeStart}
+        style={{
+          width: 6,
+          flexShrink: 0,
+          cursor: "ew-resize",
+          background: "#0c1629",
+          borderLeft: "1px solid #1E293B",
+          borderRight: "1px solid #1E293B",
+        }}
+      />
+
       {/* Right panel */}
-      <div style={{width:278,background:"#0A1628",borderLeft:"1px solid #1E293B",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
+      <div style={{width:rightPanelWidth,minWidth:200,maxWidth:900,background:"#0A1628",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
 
         {/* Events */}
         <div style={{borderBottom:"1px solid #1E293B",flexShrink:0}}>
@@ -1294,7 +1349,15 @@ export default function App() {
 
         {/* Detail */}
         {selected?(
-          <div style={{flex:1,overflowY:"auto",padding:14}}>
+          <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            <div style={{
+              flex: selected.kind==="Pod" ? "0 1 auto" : 1,
+              maxHeight: selected.kind==="Pod" ? "46%" : undefined,
+              minHeight: 0,
+              overflowY: "auto",
+              padding: 14,
+              boxSizing: "border-box",
+            }}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
               <span style={{fontWeight:700,fontSize:13}}>Detay</span>
               <button onClick={()=>setSelected(null)} style={{background:"transparent",border:"none",color:"#64748B",cursor:"pointer",fontSize:18,lineHeight:1}}>×</button>
@@ -1337,25 +1400,6 @@ export default function App() {
               <div style={{marginTop:10,marginBottom:4}}>
                 <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Container imajları</div>
                 <div style={{fontSize:11,fontFamily:"ui-monospace,monospace",color:"#CBD5E1",whiteSpace:"pre-wrap",wordBreak:"break-all",lineHeight:1.45}}>{selected.podImageInfo}</div>
-              </div>
-            )}
-            {selected.kind==="Pod"&&(
-              <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #1E293B"}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:8}}>
-                  <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1}}>Pod logları</div>
-                  <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                    {selected.podContainers?.length>1&&(
-                      <select value={podLogContainer} onChange={e=>setPodLogContainer(e.target.value)} style={{background:"#020817",border:"1px solid #1E293B",borderRadius:6,color:"#E2E8F0",fontSize:11,padding:"4px 8px",cursor:"pointer"}}>
-                        {selected.podContainers.map(nm=>(<option key={nm} value={nm}>{nm}</option>))}
-                      </select>
-                    )}
-                    <button type="button" onClick={()=>setPodLogTick(t=>t+1)} style={{background:"#1E3A5F",border:"1px solid #3B82F6",color:"#93C5FD",borderRadius:6,padding:"4px 10px",fontSize:10,cursor:"pointer"}}>Yenile</button>
-                  </div>
-                </div>
-                {podLogLoading&&<div style={{fontSize:11,color:"#64748B"}}>Yükleniyor…</div>}
-                {podLogErr&&!podLogLoading&&<div style={{fontSize:11,color:"#F87171",wordBreak:"break-word"}}>{podLogErr}</div>}
-                {!podLogLoading&&podLogText&&<pre style={{margin:0,maxHeight:240,overflow:"auto",fontSize:10,lineHeight:1.35,background:"#020817",border:"1px solid #1E293B",borderRadius:8,padding:10,color:"#E2E8F0",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{podLogText}</pre>}
-                {!podLogLoading&&!podLogErr&&!podLogText&&selected.sampleLog===undefined&&<div style={{fontSize:11,color:"#64748B"}}>Log boş veya henüz yüklenmedi.</div>}
               </div>
             )}
 
@@ -1402,6 +1446,39 @@ export default function App() {
                 </div>
               );
             })()}
+            </div>
+            {selected.kind==="Pod"&&(
+              <div style={{
+                flex: 1,
+                minHeight: 96,
+                display: "flex",
+                flexDirection: "column",
+                borderTop: "1px solid #1E293B",
+                padding: "10px 14px 12px",
+                boxSizing: "border-box",
+                overflow: "hidden",
+              }}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,flexShrink:0}}>
+                  <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1}}>Pod logları</div>
+                  <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                    {selected.podContainers?.length>1&&(
+                      <select value={podLogContainer} onChange={e=>setPodLogContainer(e.target.value)} style={{background:"#020817",border:"1px solid #1E293B",borderRadius:6,color:"#E2E8F0",fontSize:11,padding:"4px 8px",cursor:"pointer"}}>
+                        {selected.podContainers.map(nm=>(<option key={nm} value={nm}>{nm}</option>))}
+                      </select>
+                    )}
+                    <button type="button" onClick={()=>setPodLogTick(t=>t+1)} style={{background:"#1E3A5F",border:"1px solid #3B82F6",color:"#93C5FD",borderRadius:6,padding:"4px 10px",fontSize:10,cursor:"pointer"}}>Yenile</button>
+                  </div>
+                </div>
+                <div style={{flex:1,minHeight:0,overflowY:"scroll",overflowX:"auto",WebkitOverflowScrolling:"touch",marginTop:8}}>
+                  {podLogLoading&&<div style={{fontSize:11,color:"#64748B",padding:"4px 0"}}>Yükleniyor…</div>}
+                  {podLogErr&&!podLogLoading&&<div style={{fontSize:11,color:"#F87171",wordBreak:"break-word",padding:"4px 0"}}>{podLogErr}</div>}
+                  {!podLogLoading&&podLogText&&(
+                    <pre style={{margin:0,fontSize:10,lineHeight:1.35,background:"#020817",border:"1px solid #1E293B",borderRadius:8,padding:10,color:"#E2E8F0",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{podLogText}</pre>
+                  )}
+                  {!podLogLoading&&!podLogErr&&!podLogText&&selected.sampleLog===undefined&&<div style={{fontSize:11,color:"#64748B",padding:"4px 0"}}>Log boş veya henüz yüklenmedi.</div>}
+                </div>
+              </div>
+            )}
           </div>
         ):(
           <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"#334155",fontSize:13,padding:20,textAlign:"center",gap:8}}>

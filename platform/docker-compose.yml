@@ -33,15 +33,26 @@ services:
     ports:
       - "8081:8081"
 
+  agent-hub-service:
+    build:
+      context: ./services/agent-hub-service
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDR: ":8086"
+    ports:
+      - "8086:8086"
+
   api-gateway:
     build:
       context: ./services/api-gateway
       dockerfile: Dockerfile
     environment:
       CLUSTER_SERVICE_URL: http://cluster-service:8081
+      AGENT_HUB_SERVICE_URL: http://agent-hub-service:8086
       LISTEN_ADDR: ":8080"
     depends_on:
       - cluster-service
+      - agent-hub-service
     ports:
       - "8080:8080"
 
