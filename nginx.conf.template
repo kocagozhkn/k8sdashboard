@@ -1,12 +1,10 @@
 server {
   listen 80;
   server_name _;
+  # K8s pod içi CoreDNS — proxy_pass'te değişken kullanıldığında çözüm istek anında yapılır (başlangıçta upstream DNS hatası olmaz)
+  resolver 127.0.0.11 valid=10s ipv6=off;
 
-  location / {
-    root /usr/share/nginx/html;
-    index index.html;
-    try_files $$uri $$uri/ /index.html;
-  }
+  include /etc/nginx/snippets/spa-root.conf;
 
   # Pod içi kubectl-proxy (sidecar) — tarayıcı aynı origin üzerinden API'ye ulaşır
   location /k8s-api/ {
@@ -16,9 +14,10 @@ server {
     proxy_set_header Host 127.0.0.1:8001;
   }
 
-  # Prometheus (mesh RPS) — PROMETHEUS_UPSTREAM=host:port (örn. prometheus.azure-extensions-usage-system.svc.cluster.local:9090)
+  # Prometheus (mesh RPS) — PROMETHEUS_UPSTREAM=host:port; değişken + resolver ile DNS pod ayağa kalkarken de geçerli
   location /prometheus/ {
-    proxy_pass http://${PROMETHEUS_UPSTREAM}/;
+    set $prom_backend ${PROMETHEUS_UPSTREAM};
+    proxy_pass http://$prom_backend/;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
     proxy_connect_timeout 10s;
