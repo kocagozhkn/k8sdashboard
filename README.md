@@ -9,6 +9,7 @@ A lightweight UI built with React, Vite, and D3 that shows Kubernetes resources 
 - **kubeconfig**: File upload or paste; token-based contexts can call the API directly when CORS allows; otherwise use local `kubectl proxy --port=8001`.
 - **Demo** and **kubectl output paste** (`kubectl get … -o json`).
 - **Two-container pod**: Nginx (static UI + `/k8s-api` reverse proxy) + `kubectl` proxy sidecar (ServiceAccount API access).
+- **Mesh traffic (Prometheus)**: Grafikte Istio / Linkerd / Cilium Hubble metriklerinden yaklaşık **RPS** (5 dakikalık `rate`) okunur. Varsayılan Prometheus adresi aynı origin üzerinden `/prometheus` (`nginx.conf` içindeki upstream’i kendi `monitoring` servisinize göre düzenleyin). Yerelde Vite, `kubectl port-forward svc/prometheus 9090:9090` ile `/prometheus` → `127.0.0.1:9090` proxy eder.
 
 ## Requirements
 
