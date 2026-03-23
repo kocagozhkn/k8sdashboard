@@ -1,6 +1,6 @@
 /**
  * Ön tanımlı AKS / kubectl context seçenekleri.
- * - apiBase: "same-origin" → Ingress’te barındığınız kümede /k8s-api; localhost’ta http://127.0.0.1:8001
+ * - apiBase: "same-origin" → /k8s-api (LB, port-forward, Ingress); yalnız Vite dev (5173/4173) → 127.0.0.1:8001
  * - apiBase: tam URL → kubectl-proxy veya başka kümedeki topology /k8s-api kökü (sonunda /k8s-api olmalı)
  */
 export const CLUSTER_PRESETS = [
@@ -17,8 +17,9 @@ export function resolvePresetApiBase(preset) {
   const raw = preset.apiBase
   if (raw === "same-origin") {
     if (typeof window === "undefined") return ""
-    const h = window.location.hostname
-    if (h === "localhost" || h === "127.0.0.1") return "http://127.0.0.1:8001"
+    const { hostname, port } = window.location
+    const vite = (hostname === "localhost" || hostname === "127.0.0.1") && (port === "5173" || port === "4173")
+    if (vite) return "http://127.0.0.1:8001"
     return `${window.location.origin.replace(/\/$/, "")}/k8s-api`
   }
   return String(raw || "").trim().replace(/\/$/, "")

@@ -10,11 +10,52 @@ import {
   clearKubeconfigStorage,
 } from "./kubeconfig-utils.js";
 
-/** Pod + Ingress üzerinden açıldığında (Vite dev değil) */
-function isDeployedOnKubernetesIngress() {
+function isLocalViteDev() {
   if (typeof window === "undefined") return false;
-  const h = window.location.hostname;
-  return h !== "localhost" && h !== "127.0.0.1";
+  const { hostname, port } = window.location;
+  if (hostname !== "localhost" && hostname !== "127.0.0.1") return false;
+  return port === "5173" || port === "4173";
+}
+
+/** UI Nginx’ten geliyorsa (LB, port-forward, küme hostu); Vite dev hariç */
+function isUiServedViaTopologyPod() {
+  if (typeof window === "undefined") return false;
+  return !isLocalViteDev();
+}
+
+/** kubectl proxy listesi: Vite dışında aynı UI origin’inde /k8s-api; farklı origin’deki tam QA URL korunur; laptop :8001 yanlışlığı düzeltilir */
+function normalizeKubernetesListBase(baseRaw, requestHeaders = {}) {
+  const hasAuth = Boolean(requestHeaders.Authorization || requestHeaders.authorization);
+  const base = (baseRaw || "").trim().replace(/\/$/, "");
+  if (typeof window === "undefined") return base;
+  if (hasAuth) return base;
+  try {
+    if (base.startsWith("http://") || base.startsWith("https://")) {
+      const u = new URL(base);
+      if (u.origin !== window.location.origin) {
+        const laptopKubectlProxy =
+          (u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port === "8001";
+        if (!laptopKubectlProxy) return base;
+      }
+    }
+  } catch {
+    /* */
+  }
+  if (isLocalViteDev()) return base || "http://127.0.0.1:8001";
+  return `${window.location.origin.replace(/\/$/, "")}/k8s-api`;
+}
+
+/** fetch için mutlak URL (göreli çözümleme / PNA sorunlarını azaltır) */
+function kubernetesListFetchUrl(baseRaw, pathSuffix) {
+  const base = (baseRaw || "").replace(/\/$/, "");
+  const suf = pathSuffix.startsWith("/") ? pathSuffix.slice(1) : pathSuffix;
+  if (typeof window === "undefined") return `${base}/${suf}`;
+  const root = base.startsWith("http://") || base.startsWith("https://") ? `${base}/` : `${window.location.origin}${base.startsWith("/") ? base : `/${base}`}/`;
+  try {
+    return new URL(suf, root).href;
+  } catch {
+    return `${base}/${suf}`;
+  }
 }
 
 const KINDS = {
@@ -205,15 +246,24 @@ function buildEdges(nodes, rawItems) {
   }
   const seen=new Set(); return edges.filter(e=>{const k=`${e.source}→${e.target}`;if(seen.has(k))return false;seen.add(k);return true;});
 }
+function itemKindFromListKind(listKind) {
+  if (!listKind || typeof listKind !== "string" || !listKind.endsWith("List")) return "";
+  const base = listKind.slice(0, -4);
+  return KINDS[base] ? base : "";
+}
+
 function parseKubectl(jsonStr) {
   const data=JSON.parse(jsonStr), items=data.items||(data.kind!=="List"?[data]:[]);
+  const fallbackKind=itemKindFromListKind(data.kind);
   const nodes=[],rawItems=[];
   for (const item of items) {
-    if (!KINDS[item.kind]) continue;
+    const k=item.kind||fallbackKind;
+    if (!k||!KINDS[k]) continue;
+    const full={...item,kind:k};
     const ns=item.metadata?.namespace||"default";
-    const id=`${item.kind.toLowerCase()}-${ns}-${item.metadata.name}`;
-    nodes.push({id,kind:item.kind,name:item.metadata.name,namespace:ns,labels:item.metadata.labels||{},status:getStatus(item),restarts:getRestarts(item)});
-    rawItems.push({...item,_id:id});
+    const id=`${k.toLowerCase()}-${ns}-${item.metadata.name}`;
+    nodes.push({id,kind:k,name:item.metadata.name,namespace:ns,labels:item.metadata.labels||{},status:getStatus(full),restarts:getRestarts(full)});
+    rawItems.push({...full,_id:id});
   }
   return {nodes,edges:buildEdges(nodes,rawItems)};
 }
@@ -355,11 +405,12 @@ export default function App() {
   const [selected,setSelected]=useState(null);
   const [nsFilter,setNsFilter]=useState("all");
   const [typeFilters,setTypeFilters]=useState(new Set(Object.keys(KINDS)));
+  const [nameFilter,setNameFilter]=useState("");
+  const [healthFilter,setHealthFilter]=useState("all");
   const [rawInput,setRawInput]=useState("");
   const [apiUrl,setApiUrl]=useState(()=>{
     if(typeof window==="undefined") return "http://127.0.0.1:8001";
-    const h=window.location.hostname;
-    if(h==="localhost"||h==="127.0.0.1") return "http://127.0.0.1:8001";
+    if(isLocalViteDev()) return "http://127.0.0.1:8001";
     return `${window.location.origin.replace(/\/$/,"")}/k8s-api`;
   });
   const [err,setErr]=useState("");
@@ -369,7 +420,7 @@ export default function App() {
   const [kubeconfigYaml,setKubeconfigYaml]=useState("");
   const [kubeContexts,setKubeContexts]=useState([]);
   const [apiFetchHeaders,setApiFetchHeaders]=useState({});
-  const [inClusterBootstrap,setInClusterBootstrap]=useState(isDeployedOnKubernetesIngress);
+  const [inClusterBootstrap,setInClusterBootstrap]=useState(isUiServedViaTopologyPod);
   const autoConnectDoneRef=useRef(false);
   const fileInputRef=useRef(null);
   const svgRef=useRef(null);
@@ -384,14 +435,35 @@ export default function App() {
     }catch{ setKubeContexts([]); }
   },[]);
 
-  const filtered=useMemo(()=>{
+  useEffect(()=>{
+    setNameFilter("");
+    setHealthFilter("all");
+  },[graphData]);
+
+  const shapeFiltered=useMemo(()=>{
     if(!graphData) return {nodes:[],edges:[]};
-    const nodes=graphData.nodes.filter(n=>(nsFilter==="all"||n.namespace===nsFilter)&&typeFilters.has(n.kind));
+    const q=nameFilter.trim().toLowerCase();
+    const nodes=graphData.nodes.filter(n=>{
+      if(nsFilter!=="all"&&n.namespace!==nsFilter) return false;
+      if(!typeFilters.has(n.kind)) return false;
+      if(q){
+        const nm=n.name.toLowerCase(), ns=n.namespace.toLowerCase(), id=n.id.toLowerCase();
+        if(!nm.includes(q)&&!ns.includes(q)&&!id.includes(q)) return false;
+      }
+      return true;
+    });
     const ids=new Set(nodes.map(n=>n.id));
     return {nodes,edges:graphData.edges.filter(e=>ids.has(e.source)&&ids.has(e.target))};
-  },[graphData,nsFilter,typeFilters]);
+  },[graphData,nsFilter,typeFilters,nameFilter]);
 
-  const issues=useMemo(()=>analyzeHealth(filtered.nodes,filtered.edges),[filtered]);
+  const issues=useMemo(()=>analyzeHealth(shapeFiltered.nodes,shapeFiltered.edges),[shapeFiltered]);
+
+  const filtered=useMemo(()=>{
+    if(healthFilter==="all") return shapeFiltered;
+    const nodes=shapeFiltered.nodes.filter(n=>nodeHealthLevel(n.id,issues)===healthFilter);
+    const ids=new Set(nodes.map(n=>n.id));
+    return {nodes,edges:shapeFiltered.edges.filter(e=>ids.has(e.source)&&ids.has(e.target))};
+  },[shapeFiltered,healthFilter,issues]);
   const critCount=issues.filter(i=>i.level==="critical").length;
   const warnCount=issues.filter(i=>i.level==="warning").length;
   const infoCount=issues.filter(i=>i.level==="info").length;
@@ -399,22 +471,76 @@ export default function App() {
   useGraph(svgRef,filtered.nodes,filtered.edges,issues,selected?.id,(n)=>setSelected(n));
 
   const namespaces=useMemo(()=>[...new Set((graphData?.nodes||[]).map(n=>n.namespace))].sort(),[graphData]);
-  const kindCounts=useMemo(()=>{const c={};(graphData?.nodes||[]).forEach(n=>c[n.kind]=(c[n.kind]||0)+1);return c;},[graphData]);
+  const kindCounts=useMemo(()=>{
+    const c={};
+    if(!graphData) return c;
+    const q=nameFilter.trim().toLowerCase();
+    for(const n of graphData.nodes){
+      if(nsFilter!=="all"&&n.namespace!==nsFilter) continue;
+      if(q){
+        const nm=n.name.toLowerCase(), ns=n.namespace.toLowerCase(), id=n.id.toLowerCase();
+        if(!nm.includes(q)&&!ns.includes(q)&&!id.includes(q)) continue;
+      }
+      c[n.kind]=(c[n.kind]||0)+1;
+    }
+    return c;
+  },[graphData,nsFilter,nameFilter]);
 
   const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter("all");setScreen("graph");};
   const applyInput=()=>{setErr("");try{setGraphData(parseKubectl(rawInput));setSelected(null);setNsFilter("all");setScreen("graph");}catch(e){setErr("JSON hatası: "+e.message);}};
   const fetchAPI=async(apiBaseOverride,opts={})=>{
     setLoading(true);setErr("");const results=[];
     const hdr={...apiFetchHeaders,...(opts.headers||{})};
-    const tf=async(url)=>{try{const r=await fetch(url,{headers:hdr});if(r.ok){const d=await r.json();results.push(...(d.items||[]));}}catch{}};
-    const base=(apiBaseOverride??apiUrl).replace(/\/$/,"");
-    await Promise.all(["pods","services","configmaps","secrets","persistentvolumeclaims"].map(r=>tf(`${base}/api/v1/${r}`)));
-    await Promise.all(["deployments","statefulsets","daemonsets","replicasets"].map(r=>tf(`${base}/apis/apps/v1/${r}`)));
-    await tf(`${base}/apis/networking.k8s.io/v1/ingresses`);
-    await Promise.all(["jobs","cronjobs"].map(r=>tf(`${base}/apis/batch/v1/${r}`)));
+    const failures=[];
+    const baseRaw=(apiBaseOverride??apiUrl).replace(/\/$/,"");
+    const base=normalizeKubernetesListBase(baseRaw,hdr);
+    /* K8s list JSON’unda çoğu item’da kind yok; parseKubectl KINDS[item.kind] ile süzüyordu → boş graf */
+    const collect=async(pathSuffix,kindName)=>{
+      const url=kubernetesListFetchUrl(base,pathSuffix);
+      try{
+        const r=await fetch(url,{
+          headers:hdr,
+          cache:"no-store",
+          credentials:"omit",
+        });
+        if(!r.ok){
+          let detail="";
+          try{const t=await r.text();if(t)detail=t.slice(0,180);}catch{/* */}
+          failures.push(`${pathSuffix} → HTTP ${r.status}${detail?`: ${detail}`:""}`);
+          return;
+        }
+        const text=await r.text();
+        if(!text)return;
+        const d=JSON.parse(text);
+        if(!Array.isArray(d.items))return;
+        for(const it of d.items)results.push({...it,kind:it.kind||kindName});
+      }catch(e){
+        failures.push(`${pathSuffix}: ${e.message||String(e)}`);
+      }
+    };
+    await Promise.all([
+      collect("/api/v1/pods","Pod"),
+      collect("/api/v1/services","Service"),
+      collect("/api/v1/configmaps","ConfigMap"),
+      collect("/api/v1/secrets","Secret"),
+      collect("/api/v1/persistentvolumeclaims","PersistentVolumeClaim"),
+    ]);
+    await Promise.all([
+      collect("/apis/apps/v1/deployments","Deployment"),
+      collect("/apis/apps/v1/statefulsets","StatefulSet"),
+      collect("/apis/apps/v1/daemonsets","DaemonSet"),
+      collect("/apis/apps/v1/replicasets","ReplicaSet"),
+    ]);
+    await collect("/apis/networking.k8s.io/v1/ingresses","Ingress");
+    await Promise.all([
+      collect("/apis/batch/v1/jobs","Job"),
+      collect("/apis/batch/v1/cronjobs","CronJob"),
+    ]);
     if(!results.length){
-      const corsHint=hdr.Authorization?" Çoğu kümede API sunucusu tarayıcıdan CORS izin vermez; bu durumda kubectl proxy --port=8001 ve API URL http://127.0.0.1:8001 kullanın.":"";
-      setErr("Hiç kaynak bulunamadı. Yerelde: kubectl proxy --port=8001. Kümede: …/k8s-api veya token ile doğrudan API (CORS kısıtı mümkün)."+corsHint);
+      const corsHint=hdr.Authorization?" Doğrudan token ile çağrıda CORS engeli olabilir; kubectl proxy --port=8001 deneyin.":"";
+      const pfHint=!isLocalViteDev()&&typeof window!=="undefined"&&(window.location.hostname==="localhost"||window.location.hostname==="127.0.0.1")?" Port-forward kullanıyorsanız adresin http://localhost:PORT şeklinde olduğundan ve API’nin aynı PORT üzerinden /k8s-api ile geldiğinden emin olun (127.0.0.1:8001 laptop’taki kubectl proxy içindir).":"";
+      const failTail=failures.length?` Detay: ${failures.slice(0,3).join(" · ")}${failures.length>3?" …":""}`:"";
+      setErr("API’den kayıt alınamadı (liste boş veya tüm istekler başarısız). LB veya port-forward ile açıyorsanız sayfa adresi ile /k8s-api aynı origin’de olmalı. Önbellek için hard refresh deneyin."+corsHint+pfHint+failTail);
       setLoading(false);
       return;
     }
@@ -423,13 +549,13 @@ export default function App() {
   };
 
   useEffect(()=>{
-    if(!isDeployedOnKubernetesIngress()){
+    if(!isUiServedViaTopologyPod()){
       setInClusterBootstrap(false);
       return;
     }
     if(autoConnectDoneRef.current) return;
     autoConnectDoneRef.current=true;
-    const base=`${window.location.origin.replace(/\/$/,"")}/k8s-api`;
+    const base=normalizeKubernetesListBase(`${window.location.origin.replace(/\/$/,"")}/k8s-api`,{});
     setApiUrl(base);
     setApiFetchHeaders({});
     const internalId=CLUSTER_PRESETS.find(p=>p.id==="cortex-internal-aks")?.id;
@@ -656,6 +782,43 @@ export default function App() {
               <div style={{fontSize:9,color:"#64748B"}}>{l}</div>
             </div>
           ))}
+        </div>
+        {/* Filtre */}
+        <div style={{padding:"8px 14px",borderBottom:"1px solid #1E293B"}}>
+          <div style={{fontSize:10,color:"#475569",marginBottom:6,textTransform:"uppercase",letterSpacing:1}}>Filtre</div>
+          <input
+            type="search"
+            value={nameFilter}
+            onChange={e=>setNameFilter(e.target.value)}
+            placeholder="İsim, ns veya id…"
+            style={{width:"100%",boxSizing:"border-box",background:"#020817",border:"1px solid #1E293B",borderRadius:6,color:"#E2E8F0",fontSize:11,padding:"6px 8px",outline:"none",marginBottom:8}}
+          />
+          <div style={{fontSize:9,color:"#475569",marginBottom:4}}>Sağlık</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+            {[
+              {k:"all",l:"Tümü",c:"#64748B"},
+              {k:"critical",l:"Kritik",c:"#EF4444"},
+              {k:"warning",l:"Uyarı",c:"#F59E0B"},
+              {k:"info",l:"Bilgi",c:"#60A5FA"},
+              {k:"ok",l:"OK",c:"#22C55E"},
+            ].map(({k,l,c})=>(
+              <button
+                key={k}
+                type="button"
+                onClick={()=>setHealthFilter(k)}
+                style={{
+                  border:`1px solid ${healthFilter===k?c:"#334155"}`,
+                  background:healthFilter===k?`${c}22`:"#0F172A",
+                  color:healthFilter===k?c:"#94A3B8",
+                  borderRadius:6,
+                  padding:"3px 8px",
+                  fontSize:10,
+                  cursor:"pointer",
+                  fontWeight:healthFilter===k?700:500,
+                }}
+              >{l}</button>
+            ))}
+          </div>
         </div>
         {/* NS */}
         <div style={{padding:"8px 14px",borderBottom:"1px solid #1E293B"}}>

@@ -112,32 +112,17 @@ kind: Service
 metadata:
   name: k8s-topology
   namespace: topology
+  labels:
+    app: k8s-topology
+  annotations:
+    # Kong kullanılmaz; Azure iç LoadBalancer (VNet IP)
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
 spec:
+  type: LoadBalancer
   selector:
     app: k8s-topology
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 80
-  type: ClusterIP
-
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: k8s-topology
-  namespace: topology
-  labels:
-    app: k8s-topology
-spec:
-  ingressClassName: kong
-  rules:
-    - host: k8s-topology.internal.cortex.ai
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: k8s-topology
-                port:
-                  number: 80
+      protocol: TCP
