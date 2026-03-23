@@ -5,7 +5,7 @@ server {
   location / {
     root /usr/share/nginx/html;
     index index.html;
-    try_files $uri $uri/ /index.html;
+    try_files $$uri $$uri/ /index.html;
   }
 
   # Pod içi kubectl-proxy (sidecar) — tarayıcı aynı origin üzerinden API'ye ulaşır
@@ -13,13 +13,12 @@ server {
     proxy_pass http://127.0.0.1:8001/;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
-    # kubectl proxy varsayılan olarak sadece localhost Host kabul eder
     proxy_set_header Host 127.0.0.1:8001;
   }
 
-  # Prometheus (mesh RPS) — kube-prometheus-stack varsayılan servis adı; farklıysa bu upstream’i güncelleyin
+  # Prometheus (mesh RPS) — PROMETHEUS_UPSTREAM=host:port (örn. prometheus.azure-extensions-usage-system.svc.cluster.local:9090)
   location /prometheus/ {
-    proxy_pass http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090/;
+    proxy_pass http://${PROMETHEUS_UPSTREAM}/;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
     proxy_connect_timeout 10s;

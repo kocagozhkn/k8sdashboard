@@ -99,6 +99,10 @@ spec:
         - name: k8s-topology
           image: cortexdevacrincp2.azurecr.io/k8s-topology:latest
           imagePullPolicy: Always
+          env:
+            # Prometheus Service DNS (port dahil). AKS azure-extensions-usage-system: svc adını kubectl get svc -n … ile doğrulayın
+            - name: PROMETHEUS_UPSTREAM
+              value: "prometheus.azure-extensions-usage-system.svc.cluster.local:9090"
           ports:
             - containerPort: 80
           resources:
