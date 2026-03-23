@@ -145,7 +145,7 @@ const DEMO = {
     {id:"dep-api",  kind:"Deployment", name:"api-server",       namespace:"production",status:"1/3"},
     {id:"sts-db",   kind:"StatefulSet",name:"postgres",         namespace:"production",status:"1/1"},
     {id:"pod-f1",   kind:"Pod",        name:"frontend-x7k2p",   namespace:"production",status:"Running",   cpuPercent:45,memPercent:52,restarts:0,
-      podContainers:["app"],podImageInfo:"demo/app:v2.4.1\n  digest: sha256:a1b2c3d4e5f6…",sampleLog:"2026-03-23T10:00:01.123Z [demo] GET /health 200 2ms\n2026-03-23T10:00:11.456Z [demo] GET /api/ready 200 4ms"},
+      podContainers:["app"],podImageInfo:"app: demo/app:v2.4.1",sampleLog:"2026-03-23T10:00:01.123Z [demo] GET /health 200 2ms\n2026-03-23T10:00:11.456Z [demo] GET /api/ready 200 4ms"},
     {id:"pod-f2",   kind:"Pod",        name:"frontend-m9n3q",   namespace:"production",status:"Running",   cpuPercent:38,memPercent:48,restarts:1},
     {id:"pod-f3",   kind:"Pod",        name:"frontend-p4r8s",   namespace:"production",status:"Running",   cpuPercent:92,memPercent:61,restarts:0},
     {id:"pod-a1",   kind:"Pod",        name:"api-server-a2b3",  namespace:"production",status:"CrashLoopBackOff",cpuPercent:12,memPercent:18,restarts:14},
@@ -302,20 +302,14 @@ function podContainerNamesFromSpec(item) {
   return names.length ? names : undefined;
 }
 
-/** Görüntü referansı + kısa imaj digest (containerStatuses.imageID) */
+/** Container adı + spec.image (sadece image:tag, digest yok) */
 function podImageInfoFromItem(item) {
   if (item.kind !== "Pod") return undefined;
-  const statuses = item.status?.containerStatuses || [];
   const lines = [];
   const add = (c, prefix) => {
-    const st = statuses.find(s => s.name === c.name);
     const ref = (c.image || "").trim() || "?";
-    let digestShort = "";
-    const id = st?.imageID || "";
-    if (id.includes("@sha256:")) digestShort = (id.split("@sha256:")[1] || "").slice(0, 12);
-    else if (id.startsWith("sha256:")) digestShort = id.slice(7, 19);
     const head = prefix ? `${prefix}${c.name}: ` : `${c.name}: `;
-    lines.push(digestShort ? `${head}${ref}\n  digest: sha256:${digestShort}…` : `${head}${ref}`);
+    lines.push(`${head}${ref}`);
   };
   for (const c of item.spec?.containers || []) add(c, "");
   for (const c of item.spec?.initContainers || []) add(c, "[init] ");

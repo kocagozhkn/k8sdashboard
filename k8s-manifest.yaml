@@ -28,6 +28,10 @@ rules:
       - persistentvolumeclaims
       - events
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - pods/log
+    verbs: ["get"]
   - apiGroups: ["apps"]
     resources:
       - deployments
