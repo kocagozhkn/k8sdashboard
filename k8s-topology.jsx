@@ -73,6 +73,8 @@ const KINDS = {
   DaemonSet:             { color: "#EF4444", tag: "DS"  },
   ReplicaSet:            { color: "#60A5FA", tag: "RS"  },
   Pod:                   { color: "#64748B", tag: "POD" },
+  Node:                  { color: "#0EA5E9", tag: "NOD" },
+  AzureService:          { color: "#2563EB", tag: "AZR" },
   ConfigMap:             { color: "#EAB308", tag: "CM"  },
   Secret:                { color: "#94A3B8", tag: "SEC" },
   PersistentVolumeClaim: { color: "#14B8A6", tag: "PVC" },
@@ -83,8 +85,8 @@ const KINDS = {
   NetworkPolicy:         { color: "#84CC16", tag: "NP"  },
 };
 
-const EDGE_COLORS = { routes:"#A855F7", selects:"#22C55E", owns:"#3B82F6", uses:"#EAB308", calls:"#F97316", scales:"#06B6D4", disrupts:"#F43F5E", policies:"#84CC16" };
-const EDGE_LEGEND_TR = { routes:"Ingress→Svc", selects:"Service→Pod", owns:"Controller→Pod", uses:"Volume/Env", calls:"App çağrısı", scales:"HPA ölçekleme", disrupts:"PDB koruma", policies:"NetworkPolicy→Pod" };
+const EDGE_COLORS = { routes:"#A855F7", selects:"#22C55E", owns:"#3B82F6", uses:"#EAB308", calls:"#F97316", scales:"#06B6D4", disrupts:"#F43F5E", policies:"#84CC16", hosts:"#0EA5E9", azure:"#2563EB" };
+const EDGE_LEGEND_TR = { routes:"Ingress→Svc", selects:"Service→Pod", owns:"Controller→Pod", uses:"Volume/Env", calls:"App çağrısı", scales:"HPA ölçekleme", disrupts:"PDB koruma", policies:"NetworkPolicy→Pod", hosts:"Node→Pod", azure:"Azure bağımlılığı" };
 const HEALTH_COLORS = { critical:"#EF4444", warning:"#F59E0B", info:"#60A5FA", ok:"#22C55E" };
 const NW = 172, NH = 66;
 
@@ -108,6 +110,11 @@ function analyzeHealth(nodes, edges) {
       else if (cpu>70)            issues.push({id:n.id,level:"warning", code:"ElevatedCPU",   msg:`${n.name} CPU %${cpu} kullanıyor`,                fix:"CPU kullanımını izlemeye devam edin"});
       if (mem>90)                 issues.push({id:n.id,level:"critical",code:"HighMemory",    msg:`${n.name} Memory %${mem} kullanıyor`,             fix:"Memory limit artırın veya memory leak araştırın"});
       else if (mem>75)            issues.push({id:n.id,level:"warning", code:"ElevatedMemory",msg:`${n.name} Memory %${mem} kullanıyor`,             fix:"Bellek tüketimini izleyin"});
+    }
+    if (n.kind === "Node") {
+      if (n.nodeReady === false) issues.push({id:n.id,level:"critical",code:"NodeNotReady",msg:`${n.name} hazır değil`,fix:"kubectl describe node ile condition ve kubelet durumunu inceleyin"});
+      if (n.nodePressure?.some(p=>p.status)) issues.push({id:n.id,level:"warning",code:"NodePressure",msg:`${n.name} kaynak baskısı altında (${n.nodePressure.filter(p=>p.status).map(p=>p.type).join(", ")})`,fix:"CPU, memory ve disk kullanımını azaltın veya node kapasitesini artırın"});
+      if ((n.podCount||0) >= 40) issues.push({id:n.id,level:"warning",code:"BusyNode",msg:`${n.name} üzerinde ${n.podCount} pod çalışıyor`,fix:"Pod dağılımını dengeleyin veya node havuzunu genişletin"});
     }
     if (["Deployment","StatefulSet","DaemonSet"].includes(n.kind)) {
       const p=(n.status||"").split("/");
@@ -144,6 +151,8 @@ function nodeHealthLevel(id, issues) {
 // ── Demo data ────────────────────────────────────────────────────────────────
 const DEMO = {
   nodes:[
+    {id:"node-cluster-node-a",kind:"Node",name:"cluster-node-a",namespace:"cluster",status:"Ready",nodeReady:true,nodeRoles:["worker"],podCount:5},
+    {id:"node-cluster-node-b",kind:"Node",name:"cluster-node-b",namespace:"cluster",status:"MemoryPressure",nodeReady:true,nodeRoles:["worker"],podCount:4,nodePressure:[{type:"MemoryPressure",status:true}]},
     {id:"ing-web",  kind:"Ingress",    name:"web-ingress",      namespace:"production",status:"Active"},
     {id:"svc-fe",   kind:"Service",    name:"frontend-svc",     namespace:"production",status:"Active"},
     {id:"svc-api",  kind:"Service",    name:"api-svc",          namespace:"production",status:"Active"},
@@ -151,28 +160,28 @@ const DEMO = {
     {id:"dep-fe",   kind:"Deployment", name:"frontend",         namespace:"production",status:"3/3"},
     {id:"dep-api",  kind:"Deployment", name:"api-server",       namespace:"production",status:"1/3"},
     {id:"sts-db",   kind:"StatefulSet",name:"postgres",         namespace:"production",status:"1/1"},
-    {id:"pod-f1",   kind:"Pod",        name:"frontend-x7k2p",   namespace:"production",status:"Running",   cpuPercent:45,memPercent:52,restarts:0,
+    {id:"pod-f1",   kind:"Pod",        name:"frontend-x7k2p",   namespace:"production",status:"Running",   cpuPercent:45,memPercent:52,restarts:0,nodeName:"cluster-node-a",
       podContainers:["app"],podImageInfo:"app: demo/app:v2.4.1",sampleLog:"2026-03-23T10:00:01.123Z [demo] GET /health 200 2ms\n2026-03-23T10:00:11.456Z [demo] GET /api/ready 200 4ms"},
-    {id:"pod-f2",   kind:"Pod",        name:"frontend-m9n3q",   namespace:"production",status:"Running",   cpuPercent:38,memPercent:48,restarts:1},
-    {id:"pod-f3",   kind:"Pod",        name:"frontend-p4r8s",   namespace:"production",status:"Running",   cpuPercent:92,memPercent:61,restarts:0},
-    {id:"pod-a1",   kind:"Pod",        name:"api-server-a2b3",  namespace:"production",status:"CrashLoopBackOff",cpuPercent:12,memPercent:18,restarts:14},
+    {id:"pod-f2",   kind:"Pod",        name:"frontend-m9n3q",   namespace:"production",status:"Running",   cpuPercent:38,memPercent:48,restarts:1,nodeName:"cluster-node-a"},
+    {id:"pod-f3",   kind:"Pod",        name:"frontend-p4r8s",   namespace:"production",status:"Running",   cpuPercent:92,memPercent:61,restarts:0,nodeName:"cluster-node-b"},
+    {id:"pod-a1",   kind:"Pod",        name:"api-server-a2b3",  namespace:"production",status:"CrashLoopBackOff",cpuPercent:12,memPercent:18,restarts:14,nodeName:"cluster-node-b"},
     {id:"pod-a2",   kind:"Pod",        name:"api-server-c4d5",  namespace:"production",status:"Pending",   cpuPercent:0, memPercent:0, restarts:0},
-    {id:"pod-a3",   kind:"Pod",        name:"api-server-e6f7",  namespace:"production",status:"Running",   cpuPercent:55,memPercent:77,restarts:2},
-    {id:"pod-db",   kind:"Pod",        name:"postgres-0",       namespace:"production",status:"Running",   cpuPercent:62,memPercent:88,restarts:0},
+    {id:"pod-a3",   kind:"Pod",        name:"api-server-e6f7",  namespace:"production",status:"Running",   cpuPercent:55,memPercent:77,restarts:2,nodeName:"cluster-node-a"},
+    {id:"pod-db",   kind:"Pod",        name:"postgres-0",       namespace:"production",status:"Running",   cpuPercent:62,memPercent:88,restarts:0,nodeName:"cluster-node-b"},
     {id:"cm-app",   kind:"ConfigMap",  name:"app-config",       namespace:"production",status:"Active"},
     {id:"cm-nginx", kind:"ConfigMap",  name:"nginx-config",     namespace:"production",status:"Active"},
     {id:"sec-tls",  kind:"Secret",     name:"tls-secret",       namespace:"production",status:"Active"},
     {id:"pvc-db",   kind:"PersistentVolumeClaim",name:"postgres-data",namespace:"production",status:"Bound"},
     {id:"dep-cache",kind:"Deployment", name:"redis-cache",      namespace:"production",status:"0/2"},
     {id:"svc-cache",kind:"Service",    name:"redis-svc",        namespace:"production",status:"Active"},
-    {id:"pod-c1",   kind:"Pod",        name:"redis-0",          namespace:"production",status:"OOMKilled", cpuPercent:88,memPercent:98,restarts:7},
-    {id:"pod-c2",   kind:"Pod",        name:"redis-1",          namespace:"production",status:"Evicted",   cpuPercent:0, memPercent:0, restarts:0},
+    {id:"pod-c1",   kind:"Pod",        name:"redis-0",          namespace:"production",status:"OOMKilled", cpuPercent:88,memPercent:98,restarts:7,nodeName:"cluster-node-b"},
+    {id:"pod-c2",   kind:"Pod",        name:"redis-1",          namespace:"production",status:"Evicted",   cpuPercent:0, memPercent:0, restarts:0,nodeName:"cluster-node-b"},
     {id:"dep-prom", kind:"Deployment", name:"prometheus",       namespace:"monitoring",status:"1/1"},
     {id:"svc-prom", kind:"Service",    name:"prometheus-svc",   namespace:"monitoring",status:"Active"},
-    {id:"pod-prom", kind:"Pod",        name:"prometheus-9x8y",  namespace:"monitoring",status:"Running",   cpuPercent:22,memPercent:41,restarts:0},
+    {id:"pod-prom", kind:"Pod",        name:"prometheus-9x8y",  namespace:"monitoring",status:"Running",   cpuPercent:22,memPercent:41,restarts:0,nodeName:"cluster-node-a"},
     {id:"dep-graf", kind:"Deployment", name:"grafana",          namespace:"monitoring",status:"1/1"},
     {id:"svc-graf", kind:"Service",    name:"grafana-svc",      namespace:"monitoring",status:"Active"},
-    {id:"pod-graf", kind:"Pod",        name:"grafana-a1b2c3",   namespace:"monitoring",status:"Running",   cpuPercent:14,memPercent:33,restarts:0},
+    {id:"pod-graf", kind:"Pod",        name:"grafana-a1b2c3",   namespace:"monitoring",status:"Running",   cpuPercent:14,memPercent:33,restarts:0,nodeName:"cluster-node-a"},
     {id:"cm-prom",  kind:"ConfigMap",  name:"prometheus-config",namespace:"monitoring",status:"Active"},
     {id:"svc-old",  kind:"Service",    name:"legacy-svc",       namespace:"production",status:"Active"},
   ],
@@ -209,12 +218,30 @@ const DEMO = {
     {id:"e30",source:"svc-graf", target:"pod-graf", type:"selects"},
     {id:"e31",source:"dep-prom", target:"cm-prom",  type:"uses"},
     {id:"e32",source:"dep-graf", target:"svc-prom", type:"calls"},
+    {id:"e33",source:"node-cluster-node-a", target:"pod-f1", type:"hosts"},
+    {id:"e34",source:"node-cluster-node-a", target:"pod-f2", type:"hosts"},
+    {id:"e35",source:"node-cluster-node-a", target:"pod-a3", type:"hosts"},
+    {id:"e36",source:"node-cluster-node-a", target:"pod-prom", type:"hosts"},
+    {id:"e37",source:"node-cluster-node-a", target:"pod-graf", type:"hosts"},
+    {id:"e38",source:"node-cluster-node-b", target:"pod-f3", type:"hosts"},
+    {id:"e39",source:"node-cluster-node-b", target:"pod-a1", type:"hosts"},
+    {id:"e40",source:"node-cluster-node-b", target:"pod-db", type:"hosts"},
+    {id:"e41",source:"node-cluster-node-b", target:"pod-c1", type:"hosts"},
+    {id:"e42",source:"node-cluster-node-b", target:"pod-c2", type:"hosts"},
   ],
 };
 
 // ── kubectl parser ────────────────────────────────────────────────────────────
 function getStatus(item) {
   if (item.kind==="Pod") return item.status?.phase||"Unknown";
+  if (item.kind==="Node") {
+    const conds=item.status?.conditions||[];
+    const ready=conds.find(c=>c.type==="Ready")?.status==="True";
+    const pressure=conds.find(c=>["MemoryPressure","DiskPressure","PIDPressure"].includes(c.type)&&c.status==="True");
+    if (!ready) return "NotReady";
+    if (pressure) return pressure.type;
+    return "Ready";
+  }
   if (["Deployment","StatefulSet","DaemonSet"].includes(item.kind)) {
     return `${item.status?.readyReplicas??0}/${item.spec?.replicas??1}`;
   }
@@ -234,6 +261,23 @@ function getRestarts(item) {
   if (item.kind!=="Pod") return 0;
   return item.status?.containerStatuses?.reduce((a,c)=>a+(c.restartCount||0),0)||0;
 }
+
+function nodeRolesFromItem(item) {
+  if (item.kind!=="Node") return undefined;
+  const labels=item.metadata?.labels||{};
+  const roles=Object.keys(labels)
+    .filter(k=>k.startsWith("node-role.kubernetes.io/"))
+    .map(k=>k.split("/")[1]||"worker")
+    .filter(Boolean);
+  return roles.length?roles:["worker"];
+}
+
+function nodePressureFromItem(item) {
+  if (item.kind!=="Node") return undefined;
+  return (item.status?.conditions||[])
+    .filter(c=>["MemoryPressure","DiskPressure","PIDPressure"].includes(c.type))
+    .map(c=>({type:c.type,status:c.status==="True"}));
+}
 function buildEdges(nodes, rawItems) {
   const edges=[]; let eid=0;
   const ids=new Set(nodes.map(n=>n.id));
@@ -251,6 +295,10 @@ function buildEdges(nodes, rawItems) {
     }
     if (kind==="Pod") for (const o of item.metadata?.ownerReferences||[]) {
       const oid=mkId(o.kind,ns,o.name); if(ids.has(oid)) edges.push({id:`e${eid++}`,source:oid,target:src,type:"owns"});
+    }
+    if (kind==="Pod" && item.spec?.nodeName) {
+      const t=mkId("node","cluster",item.spec.nodeName);
+      if(ids.has(t)) edges.push({id:`e${eid++}`,source:t,target:src,type:"hosts"});
     }
     if (["Deployment","StatefulSet","DaemonSet"].includes(kind)) {
       const spec=item.spec?.template?.spec||{};
@@ -323,6 +371,209 @@ function podImageInfoFromItem(item) {
   return lines.length ? lines.join("\n\n") : undefined;
 }
 
+function formatCpuRequestMilli(value) {
+  if (value == null) return "";
+  return `${value}m`;
+}
+
+function formatMemoryMi(value) {
+  if (value == null) return "";
+  return `${value} Mi`;
+}
+
+function parseCpuToMilli(v) {
+  if (!v || typeof v !== "string") return 0;
+  if (v.endsWith("m")) return Math.round(parseFloat(v) || 0);
+  if (v.endsWith("n")) return Math.round((parseFloat(v) || 0) / 1e6);
+  if (v.endsWith("u")) return Math.round((parseFloat(v) || 0) / 1e3);
+  return Math.round((parseFloat(v) || 0) * 1000);
+}
+
+function parseMemoryToMi(v) {
+  if (!v || typeof v !== "string") return 0;
+  const units = [
+    ["Ki", 1 / 1024],
+    ["Mi", 1],
+    ["Gi", 1024],
+    ["Ti", 1024 * 1024],
+    ["K", 1 / (1000 * 1024 / 1024)],
+    ["M", 1000 * 1000 / (1024 * 1024)],
+    ["G", 1000 * 1000 * 1000 / (1024 * 1024)],
+  ];
+  for (const [suffix, factor] of units) {
+    if (v.endsWith(suffix)) return Math.round((parseFloat(v) || 0) * factor);
+  }
+  return Math.round((parseFloat(v) || 0) / (1024 * 1024));
+}
+
+function resourceSummaryFromPodSpec(spec) {
+  if (!spec?.containers?.length) return undefined;
+  let reqCpuMilli = 0, limCpuMilli = 0, reqMemMi = 0, limMemMi = 0;
+  let hasReqCpu = false, hasLimCpu = false, hasReqMem = false, hasLimMem = false;
+  for (const c of spec.containers || []) {
+    const req = c.resources?.requests || {};
+    const lim = c.resources?.limits || {};
+    if (req.cpu) { reqCpuMilli += parseCpuToMilli(req.cpu); hasReqCpu = true; }
+    if (lim.cpu) { limCpuMilli += parseCpuToMilli(lim.cpu); hasLimCpu = true; }
+    if (req.memory) { reqMemMi += parseMemoryToMi(req.memory); hasReqMem = true; }
+    if (lim.memory) { limMemMi += parseMemoryToMi(lim.memory); hasLimMem = true; }
+  }
+  return {
+    reqCpuMilli: hasReqCpu ? reqCpuMilli : null,
+    limCpuMilli: hasLimCpu ? limCpuMilli : null,
+    reqMemMi: hasReqMem ? reqMemMi : null,
+    limMemMi: hasLimMem ? limMemMi : null,
+  };
+}
+
+function rolloutSummaryFromItem(item) {
+  if (!["Deployment","ReplicaSet"].includes(item.kind)) return undefined;
+  const ann = item.metadata?.annotations || {};
+  const owners = (item.metadata?.ownerReferences || []).map(o => `${o.kind}/${o.name}`);
+  return {
+    revision: ann["deployment.kubernetes.io/revision"] || "",
+    changeCause: ann["kubernetes.io/change-cause"] || "",
+    owners,
+  };
+}
+
+function normalizeAzureName(v) {
+  return String(v || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+function pushAzureDep(deps, dep) {
+  if (!dep?.serviceType || !dep?.name) return;
+  deps.push({
+    ...dep,
+    name: normalizeAzureName(dep.name),
+    confidence: dep.confidence || "inferred",
+    evidence: dep.evidence || "metadata",
+  });
+}
+
+function azureDepsFromEnv(envList = []) {
+  const deps = [];
+  for (const env of envList) {
+    const key = String(env?.name || "");
+    const value = String(env?.value || "");
+    const hay = `${key} ${value}`.toLowerCase();
+    if (!hay.trim()) continue;
+    if (value.includes(".azurecr.io")) pushAzureDep(deps, { serviceType:"ACR", name:value.match(/[a-z0-9]+\.azurecr\.io/i)?.[0] || value, confidence:"confirmed", evidence:`env:${key}` });
+    if (hay.includes("vault.azure.net") || hay.includes("keyvault")) pushAzureDep(deps, { serviceType:"Key Vault", name:value.match(/[a-z0-9-]+\.vault\.azure\.net/i)?.[0] || key, confidence:value.includes("vault.azure.net")?"confirmed":"inferred", evidence:`env:${key}` });
+    if (hay.includes("servicebus.windows.net")) pushAzureDep(deps, { serviceType:"Service Bus", name:value.match(/[a-z0-9-]+\.servicebus\.windows\.net/i)?.[0] || key, confidence:"confirmed", evidence:`env:${key}` });
+    if (hay.includes("eventhub") || hay.includes("servicebus.windows.net")) pushAzureDep(deps, { serviceType:"Event Hubs", name:value.match(/[a-z0-9-]+\.servicebus\.windows\.net/i)?.[0] || key, confidence:hay.includes("eventhub")?"inferred":"confirmed", evidence:`env:${key}` });
+    if (hay.includes("documents.azure.com") || hay.includes("cosmos")) pushAzureDep(deps, { serviceType:"Cosmos DB", name:value.match(/[a-z0-9-]+\.documents\.azure\.com/i)?.[0] || key, confidence:value.includes("documents.azure.com")?"confirmed":"inferred", evidence:`env:${key}` });
+    if (hay.includes("database.windows.net")) pushAzureDep(deps, { serviceType:"Azure SQL", name:value.match(/[a-z0-9-]+\.database\.windows\.net/i)?.[0] || key, confidence:"confirmed", evidence:`env:${key}` });
+    if (hay.includes("blob.core.windows.net") || hay.includes("queue.core.windows.net") || hay.includes("table.core.windows.net") || hay.includes("dfs.core.windows.net")) pushAzureDep(deps, { serviceType:"Storage Account", name:value.match(/[a-z0-9-]+\.(blob|queue|table|dfs)\.core\.windows\.net/i)?.[0] || key, confidence:"confirmed", evidence:`env:${key}` });
+    if (hay.includes("redis.cache.windows.net")) pushAzureDep(deps, { serviceType:"Azure Cache for Redis", name:value.match(/[a-z0-9-]+\.redis\.cache\.windows\.net/i)?.[0] || key, confidence:"confirmed", evidence:`env:${key}` });
+  }
+  return deps;
+}
+
+function azureDepsFromItem(item) {
+  const deps = [];
+  const ann = item.metadata?.annotations || {};
+  const labels = item.metadata?.labels || {};
+  const kind = item.kind;
+
+  if (kind === "Pod") {
+    for (const c of [...(item.spec?.containers || []), ...(item.spec?.initContainers || [])]) {
+      if ((c.image || "").includes(".azurecr.io")) {
+        pushAzureDep(deps, { serviceType:"ACR", name:c.image.match(/[a-z0-9]+\.azurecr\.io/i)?.[0] || c.image, confidence:"confirmed", evidence:`image:${c.name}` });
+      }
+      deps.push(...azureDepsFromEnv(c.env || []));
+    }
+    for (const v of item.spec?.volumes || []) {
+      if (v.csi?.driver?.includes("secrets-store") && (v.csi?.volumeAttributes?.secretProviderClass || "").toLowerCase().includes("azure")) {
+        pushAzureDep(deps, { serviceType:"Key Vault", name:v.csi.volumeAttributes.secretProviderClass, confidence:"confirmed", evidence:"csi:secretProviderClass" });
+      }
+    }
+  }
+
+  if (["Deployment","StatefulSet","DaemonSet","ReplicaSet"].includes(kind)) {
+    const spec = item.spec?.template?.spec || {};
+    for (const c of [...(spec.containers || []), ...(spec.initContainers || [])]) {
+      if ((c.image || "").includes(".azurecr.io")) {
+        pushAzureDep(deps, { serviceType:"ACR", name:c.image.match(/[a-z0-9]+\.azurecr\.io/i)?.[0] || c.image, confidence:"confirmed", evidence:`image:${c.name}` });
+      }
+      deps.push(...azureDepsFromEnv(c.env || []));
+    }
+    for (const v of spec.volumes || []) {
+      if (v.csi?.driver?.includes("secrets-store") && (v.csi?.volumeAttributes?.secretProviderClass || "").toLowerCase().includes("azure")) {
+        pushAzureDep(deps, { serviceType:"Key Vault", name:v.csi.volumeAttributes.secretProviderClass, confidence:"confirmed", evidence:"csi:secretProviderClass" });
+      }
+    }
+  }
+
+  if (labels["azure.workload.identity/use"] === "true" || ann["azure.workload.identity/client-id"] || labels["aadpodidbinding"]) {
+    pushAzureDep(deps, {
+      serviceType:"Managed Identity",
+      name: ann["azure.workload.identity/client-id"] || labels["aadpodidbinding"] || "workload-identity",
+      confidence:"confirmed",
+      evidence: ann["azure.workload.identity/client-id"] ? "annotation:azure.workload.identity/client-id" : "label:aadpodidbinding",
+    });
+  }
+
+  if (kind === "PersistentVolumeClaim") {
+    const sc = item.spec?.storageClassName || "";
+    if (/azurefile/i.test(sc)) pushAzureDep(deps, { serviceType:"Azure Files", name:sc, confidence:"confirmed", evidence:"storageClassName" });
+    if (/managed-csi|disk|azuredisk/i.test(sc)) pushAzureDep(deps, { serviceType:"Azure Disk", name:sc, confidence:"confirmed", evidence:"storageClassName" });
+  }
+
+  if (kind === "Service") {
+    if (Object.keys(ann).some(k => k.includes("azure-load-balancer"))) {
+      pushAzureDep(deps, { serviceType:"Azure Load Balancer", name:item.metadata?.name || "load-balancer", confidence:"confirmed", evidence:"service annotations" });
+    }
+  }
+
+  if (kind === "Ingress") {
+    if (Object.keys(ann).some(k => /appgw|application-gateway/i.test(k))) {
+      pushAzureDep(deps, { serviceType:"Application Gateway", name:item.metadata?.name || "application-gateway", confidence:"confirmed", evidence:"ingress annotations" });
+    }
+  }
+
+  const dedup = new Map();
+  for (const dep of deps) {
+    const key = `${dep.serviceType}|${dep.name}`;
+    if (!dedup.has(key)) dedup.set(key, dep);
+  }
+  return [...dedup.values()];
+}
+
+function buildAzureDependencyGraph(rawItems) {
+  const azureNodes = [];
+  const azureEdges = [];
+  const seenNodes = new Set();
+  let eid = 0;
+  for (const item of rawItems) {
+    const deps = azureDepsFromItem(item);
+    for (const dep of deps) {
+      const azureId = `azureservice-azure-${dep.serviceType.toLowerCase().replace(/[^a-z0-9]+/g,"-")}-${dep.name.toLowerCase().replace(/[^a-z0-9]+/g,"-")}`;
+      if (!seenNodes.has(azureId)) {
+        seenNodes.add(azureId);
+        azureNodes.push({
+          id: azureId,
+          kind: "AzureService",
+          name: dep.name,
+          namespace: "azure",
+          status: dep.confidence === "confirmed" ? "Confirmed" : "Inferred",
+          azureServiceType: dep.serviceType,
+          azureConfidence: dep.confidence,
+          azureEvidence: dep.evidence,
+        });
+      }
+      azureEdges.push({
+        id: `azure-e${eid++}`,
+        source: item._id,
+        target: azureId,
+        type: "azure",
+        label: dep.serviceType,
+      });
+    }
+  }
+  return { nodes: azureNodes, edges: azureEdges };
+}
+
 async function fetchPodLogTail(apiBaseRaw, hdr, namespace, podName, container, tailLines = 400) {
   const base = normalizeKubernetesListBase((apiBaseRaw || "").replace(/\/$/, ""), hdr || {});
   let path = `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}/log?tailLines=${tailLines}&timestamps=true`;
@@ -345,7 +596,7 @@ function parseKubectl(jsonStr) {
     const k=item.kind||fallbackKind;
     if (!k||!KINDS[k]) continue;
     const full={...item,kind:k};
-    const ns=item.metadata?.namespace||"default";
+    const ns=k==="Node"?"cluster":(item.metadata?.namespace||"default");
     const id=`${k.toLowerCase()}-${ns}-${item.metadata.name}`;
     const tplLabels=["Deployment","StatefulSet","ReplicaSet","DaemonSet"].includes(k)
       ? (item.spec?.template?.metadata?.labels||{})
@@ -358,6 +609,13 @@ function parseKubectl(jsonStr) {
       restarts:getRestarts(full),
       cpuPercent:item._cpuPercent,
       metricsCpuMilli:item._metricsCpuMilli,
+      nodeName:k==="Pod"?item.spec?.nodeName:undefined,
+      nodeReady:k==="Node"?((item.status?.conditions||[]).find(c=>c.type==="Ready")?.status==="True"):undefined,
+      nodeRoles:k==="Node"?nodeRolesFromItem(full):undefined,
+      nodePressure:k==="Node"?nodePressureFromItem(full):undefined,
+      nodeVersion:k==="Node"?item.status?.nodeInfo?.kubeletVersion:undefined,
+      resources:["Pod","Deployment","StatefulSet","DaemonSet","ReplicaSet"].includes(k)?resourceSummaryFromPodSpec(k==="Pod"?item.spec:item.spec?.template?.spec):undefined,
+      rollout:["Deployment","ReplicaSet"].includes(k)?rolloutSummaryFromItem(full):undefined,
       podContainers:k==="Pod"?podContainerNamesFromSpec(full):undefined,
       podImageInfo:k==="Pod"?podImageInfoFromItem(full):undefined,
     });
@@ -428,7 +686,7 @@ const KUBECTL_PLURAL = {
   Pod: "pods", Service: "services", Deployment: "deployments", StatefulSet: "statefulsets", DaemonSet: "daemonsets",
   ReplicaSet: "replicasets", Ingress: "ingresses", ConfigMap: "configmaps", Secret: "secrets",
   PersistentVolumeClaim: "persistentvolumeclaims", Job: "jobs", CronJob: "cronjobs",
-  HorizontalPodAutoscaler: "horizontalpodautoscalers", PodDisruptionBudget: "poddisruptionbudgets", NetworkPolicy: "networkpolicies",
+  HorizontalPodAutoscaler: "horizontalpodautoscalers", PodDisruptionBudget: "poddisruptionbudgets", NetworkPolicy: "networkpolicies", Node: "nodes",
 };
 
 // ── D3 hook ──────────────────────────────────────────────────────────────────
@@ -588,13 +846,150 @@ function prometheusUrlInitial() {
   return `${o}/prometheus`;
 }
 
+function toCsvValue(value) {
+  const str = value == null ? "" : String(value);
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+function downloadTextFile(filename, contents, mimeType) {
+  const blob = new Blob([contents], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function enrichGraphData(graph) {
+  const hostCounts = new Map();
+  for (const e of graph.edges || []) {
+    if (e.type !== "hosts") continue;
+    hostCounts.set(e.source, (hostCounts.get(e.source) || 0) + 1);
+  }
+  return {
+    ...graph,
+    nodes: (graph.nodes || []).map(n => n.kind === "Node" ? { ...n, podCount: hostCounts.get(n.id) || 0 } : n),
+  };
+}
+
+function dependencyImpactForNode(selectedId, nodes, edges) {
+  if (!selectedId) return null;
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  const incoming = new Map();
+  const outgoing = new Map();
+  for (const e of edges) {
+    if (!outgoing.has(e.source)) outgoing.set(e.source, []);
+    if (!incoming.has(e.target)) incoming.set(e.target, []);
+    outgoing.get(e.source).push(e);
+    incoming.get(e.target).push(e);
+  }
+  const walk = (seed, dir) => {
+    const seen = new Set();
+    const queue = [seed];
+    while (queue.length) {
+      const cur = queue.shift();
+      const list = (dir === "out" ? outgoing.get(cur) : incoming.get(cur)) || [];
+      for (const e of list) {
+        const next = dir === "out" ? e.target : e.source;
+        if (next === seed || seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    return [...seen].map(id => nodeMap.get(id)).filter(Boolean);
+  };
+  const directUpstream = ((incoming.get(selectedId) || []).map(e => nodeMap.get(e.source))).filter(Boolean);
+  const directDownstream = ((outgoing.get(selectedId) || []).map(e => nodeMap.get(e.target))).filter(Boolean);
+  const upstreamClosure = walk(selectedId, "in");
+  const downstreamClosure = walk(selectedId, "out");
+  return {
+    directUpstream,
+    directDownstream,
+    upstreamClosure,
+    downstreamClosure,
+    impactedWorkloads: downstreamClosure.filter(n => ["Pod","Deployment","StatefulSet","DaemonSet","Service"].includes(n.kind)),
+  };
+}
+
+function eventsForSelectedNode(selected, clusterEvents) {
+  if (!selected) return [];
+  const prefixes = [
+    `${selected.kind}/${selected.name}`,
+    selected.kind === "Deployment" ? `ReplicaSet/${selected.name}` : "",
+  ].filter(Boolean);
+  return (clusterEvents || []).filter(ev => {
+    if (ev.ns && selected.namespace && ev.ns !== selected.namespace && selected.kind !== "Node") return false;
+    if ((ev.obj || "") === `${selected.kind}/${selected.name}`) return true;
+    return prefixes.some(p => (ev.msg || "").includes(selected.name) || (ev.obj || "").startsWith(p));
+  });
+}
+
+function rolloutRelatedNodes(selected, nodes) {
+  if (!selected || !["Deployment","ReplicaSet"].includes(selected.kind)) return [];
+  if (selected.kind === "Deployment") {
+    return nodes.filter(n => n.kind === "ReplicaSet" && n.namespace === selected.namespace && n.rollout?.owners?.includes(`Deployment/${selected.name}`));
+  }
+  return nodes.filter(n => n.kind === "Pod" && n.namespace === selected.namespace && n.labels?.["pod-template-hash"] && selected.labels?.["pod-template-hash"] && n.labels["pod-template-hash"] === selected.labels["pod-template-hash"]);
+}
+
+const SNAPSHOT_STORAGE_KEY = "k8s-topology-snapshot-history";
+
+function loadSnapshotHistory() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(SNAPSHOT_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function makeSnapshot(graph) {
+  const entries = (graph?.nodes || []).map(n => ({
+    id: n.id,
+    kind: n.kind,
+    namespace: n.namespace,
+    name: n.name,
+    status: n.status || "",
+  }));
+  return {
+    id: `snap-${Date.now()}`,
+    createdAt: new Date().toISOString(),
+    total: entries.length,
+    entries,
+  };
+}
+
+function compareGraphToSnapshot(graph, snapshot) {
+  if (!graph || !snapshot) return null;
+  const current = new Map((graph.nodes || []).map(n => [n.id, n]));
+  const baseline = new Map((snapshot.entries || []).map(e => [e.id, e]));
+  const added = [];
+  const removed = [];
+  const changed = [];
+  for (const [id, n] of current) {
+    if (!baseline.has(id)) {
+      added.push(n);
+      continue;
+    }
+    const prev = baseline.get(id);
+    if ((prev.status || "") !== (n.status || "")) changed.push({ before: prev, after: n });
+  }
+  for (const [id, oldNode] of baseline) {
+    if (!current.has(id)) removed.push(oldNode);
+  }
+  return { added, removed, changed, snapshot };
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
   const [screen,setScreen]=useState("home");
   const [graphData,setGraphData]=useState(null);
   const [selected,setSelected]=useState(null);
   const [nsFilter,setNsFilter]=useState("default");
-  const [typeFilters,setTypeFilters]=useState(() => new Set(["Pod"]));
+  const [typeFilters,setTypeFilters]=useState(() => new Set(["Pod","Node"]));
   const [nameFilter,setNameFilter]=useState("");
   const [healthFilter,setHealthFilter]=useState("all");
   const [rawInput,setRawInput]=useState("");
@@ -621,6 +1016,8 @@ export default function App() {
   const [maskSecrets,setMaskSecrets]=useState(false);
   const [snapshotBaseline,setSnapshotBaseline]=useState(null);
   const [diffSummary,setDiffSummary]=useState(null);
+  const [snapshotHistory,setSnapshotHistory]=useState(loadSnapshotHistory);
+  const [compareSnapshotId,setCompareSnapshotId]=useState("");
   const [podLogText,setPodLogText]=useState("");
   const [podLogLoading,setPodLogLoading]=useState(false);
   const [podLogErr,setPodLogErr]=useState("");
@@ -665,6 +1062,10 @@ export default function App() {
   useEffect(()=>{
     try{localStorage.setItem("k8s-topology-prometheus-url",prometheusUrl);}catch{/* */}
   },[prometheusUrl]);
+
+  useEffect(()=>{
+    try{localStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshotHistory.slice(0, 12)));}catch{/* */}
+  },[snapshotHistory]);
 
   const loadMeshTraffic=useCallback(async()=>{
     if(meshProfile==="off"||!prometheusUrl.trim()){
@@ -751,6 +1152,16 @@ export default function App() {
   },[selected,graphWithTraffic]);
 
   const hotServices=useMemo(()=>topInboundServices(meshStats,8),[meshStats]);
+  const dependencyImpact=useMemo(()=>dependencyImpactForNode(selected?.id, graphWithTraffic.nodes, graphWithTraffic.edges),[selected?.id,graphWithTraffic]);
+  const historyDiff=useMemo(()=>compareGraphToSnapshot(graphData, snapshotHistory.find(s=>s.id===compareSnapshotId)||null),[graphData,snapshotHistory,compareSnapshotId]);
+  const selectedEvents=useMemo(()=>eventsForSelectedNode(detailNode || selected, clusterEvents),[detailNode,selected,clusterEvents]);
+  const rolloutNodes=useMemo(()=>rolloutRelatedNodes(detailNode || selected, graphWithTraffic.nodes),[detailNode,selected,graphWithTraffic]);
+
+  useEffect(()=>{
+    if(!selected) return;
+    if(filtered.nodes.some(n=>n.id===selected.id)) return;
+    setSelected(null);
+  },[filtered,selected]);
 
   useEffect(()=>{
     if(meshProfile==="off"){
@@ -830,8 +1241,8 @@ export default function App() {
     return c;
   },[graphData,nsFilter,nameFilter]);
 
-  const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter(pickInitialNamespace(DEMO.nodes));setScreen("graph");void loadMeshTraffic();};
-  const applyInput=()=>{setErr("");try{const p=parseKubectl(rawInput);setGraphData(p);setSelected(null);setNsFilter(pickInitialNamespace(p.nodes));setScreen("graph");void loadMeshTraffic();}catch(e){setErr("JSON hatası: "+e.message);}};
+  const loadDemo=()=>{setErr("");const g=enrichGraphData(DEMO);setGraphData(g);setSelected(null);setNsFilter(pickInitialNamespace(g.nodes));setScreen("graph");void loadMeshTraffic();};
+  const applyInput=()=>{setErr("");try{const p=enrichGraphData(parseKubectl(rawInput));setGraphData(p);setSelected(null);setNsFilter(pickInitialNamespace(p.nodes));setScreen("graph");void loadMeshTraffic();}catch(e){setErr("JSON hatası: "+e.message);}};
   const fetchAPI=useCallback(async(apiBaseOverride,opts={})=>{
     setLoading(true);setErr("");
     const results=[];
@@ -860,6 +1271,7 @@ export default function App() {
     };
     await Promise.all([
       collect("/api/v1/pods","Pod"),
+      collect("/api/v1/nodes","Node"),
       collect("/api/v1/services","Service"),
       collect("/api/v1/configmaps","ConfigMap"),
       collect("/api/v1/secrets","Secret"),
@@ -904,7 +1316,7 @@ export default function App() {
     }
     setFetchWarnings(failures.length?failures:[]);
     try{
-      const parsed=parseKubectl(JSON.stringify({kind:"List",items:results}));
+      const parsed=enrichGraphData(parseKubectl(JSON.stringify({kind:"List",items:results})));
       setGraphData(parsed);
       setSelected(null);
       setNsFilter(pickInitialNamespace(parsed.nodes));
@@ -952,12 +1364,33 @@ export default function App() {
     const el=svgRef.current;
     if(!el)return;
     const ser=new XMLSerializer().serializeToString(el);
-    const blob=new Blob([ser],{type:"image/svg+xml;charset=utf-8"});
-    const a=document.createElement("a");
-    a.href=URL.createObjectURL(blob);
-    a.download=`k8s-topology-${new Date().toISOString().slice(0,19).replace(/:/g,"")}.svg`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadTextFile(
+      `k8s-topology-${new Date().toISOString().slice(0,19).replace(/:/g,"")}.svg`,
+      ser,
+      "image/svg+xml;charset=utf-8",
+    );
+  };
+
+  const exportTableCsv=()=>{
+    const rows = filtered.nodes.map(n=>[
+      n.kind,
+      maskSecrets&&n.kind==="Secret"?"••••":n.name,
+      n.namespace,
+      n.status||"",
+      nodeHealthLevel(n.id,issues),
+      n.restarts??"",
+      n.cpuPercent!=null?`${n.cpuPercent}`:"",
+      n.memPercent!=null?`${n.memPercent}`:"",
+    ].map(toCsvValue).join(","));
+    const csv = [
+      "kind,name,namespace,status,health,restarts,cpu_percent,memory_percent",
+      ...rows,
+    ].join("\n");
+    downloadTextFile(
+      `k8s-topology-${new Date().toISOString().slice(0,19).replace(/:/g,"")}.csv`,
+      csv,
+      "text/csv;charset=utf-8",
+    );
   };
 
   const copyText=async(t)=>{
@@ -1300,13 +1733,22 @@ export default function App() {
               <button type="button" onClick={()=>setGraphView("table")} style={{background:graphView==="table"?"#1E3A5F":"#0F172A",border:"none",color:graphView==="table"?"#60A5FA":"#64748B",padding:"4px 10px",fontSize:11,cursor:"pointer"}}>Tablo</button>
             </div>
             {ghostBtn("SVG indir",exportTopologySvg)}
-            {ghostBtn("Anlık kaydet",()=>{if(!graphData)return;setSnapshotBaseline({ids:[...new Set(graphData.nodes.map(n=>n.id))].sort(),t:Date.now()});setDiffSummary(null);})}
+            {ghostBtn("CSV indir",exportTableCsv)}
+            {ghostBtn("Anlık kaydet",()=>{
+              if(!graphData)return;
+              setSnapshotBaseline({ids:[...new Set(graphData.nodes.map(n=>n.id))].sort(),t:Date.now()});
+              const snap=makeSnapshot(graphData);
+              setSnapshotHistory(prev=>[snap,...prev.filter(s=>s.id!==snap.id)].slice(0,12));
+              setCompareSnapshotId(snap.id);
+              setDiffSummary(null);
+            })}
             {ghostBtn("Karşılaştır",()=>{
               if(!snapshotBaseline||!graphData){setDiffSummary(null);return;}
               const now=new Set(graphData.nodes.map(n=>n.id));
+              const baseline=new Set(snapshotBaseline.ids);
               let added=0,removed=0;
-              for(const id of now)if(!snapshotBaseline.ids.includes(id))added++;
-              for(const id of snapshotBaseline.ids)if(!now.has(id))removed++;
+              for(const id of now)if(!baseline.has(id))added++;
+              for(const id of baseline)if(!now.has(id))removed++;
               setDiffSummary({added,removed,total:graphData.nodes.length});
             })}
             <label style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#64748B",cursor:"pointer"}}>
@@ -1316,6 +1758,16 @@ export default function App() {
               <input type="checkbox" checked={maskSecrets} onChange={e=>setMaskSecrets(e.target.checked)}/> Secret gizle
             </label>
             {diffSummary&&<span style={{fontSize:10,color:"#A78BFA"}}>Δ +{diffSummary.added} / −{diffSummary.removed} (toplam {diffSummary.total})</span>}
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:0.5}}>Geçmiş</span>
+            <select value={compareSnapshotId} onChange={e=>setCompareSnapshotId(e.target.value)} style={{background:"#0F172A",border:"1px solid #1E293B",borderRadius:6,color:"#94A3B8",fontSize:11,padding:"4px 8px",cursor:"pointer",minWidth:220}}>
+              <option value="">Snapshot seçin</option>
+              {snapshotHistory.map(s=>(
+                <option key={s.id} value={s.id}>{new Date(s.createdAt).toLocaleString()} · {s.total} kaynak</option>
+              ))}
+            </select>
+            {historyDiff&&<span style={{fontSize:10,color:"#CBD5E1"}}>Eklenen {historyDiff.added.length} · Silinen {historyDiff.removed.length} · Durum değişen {historyDiff.changed.length}</span>}
           </div>
           <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",maxWidth:"100%"}}>
             <span style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:0.5}}>Mesh / Prometheus</span>
@@ -1423,6 +1875,22 @@ export default function App() {
           )}
         </div>
 
+        {historyDiff&&(
+          <div style={{borderBottom:"1px solid #1E293B",padding:"8px 12px",flexShrink:0}}>
+            <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Snapshot farkı</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+              <span style={{fontSize:10,color:"#86EFAC"}}>+ {historyDiff.added.length}</span>
+              <span style={{fontSize:10,color:"#FCA5A5"}}>- {historyDiff.removed.length}</span>
+              <span style={{fontSize:10,color:"#FCD34D"}}>~ {historyDiff.changed.length}</span>
+            </div>
+            <div style={{fontSize:10,color:"#94A3B8",lineHeight:1.45,maxHeight:84,overflowY:"auto"}}>
+              {historyDiff.added.slice(0,2).map(n=><div key={`a-${n.id}`}>+ {n.kind} {n.namespace}/{n.name}</div>)}
+              {historyDiff.removed.slice(0,2).map(n=><div key={`r-${n.id}`}>- {n.kind} {n.namespace}/{n.name}</div>)}
+              {historyDiff.changed.slice(0,2).map(c=><div key={`c-${c.after.id}`}>~ {c.after.kind} {c.after.namespace}/{c.after.name}: {c.before.status} → {c.after.status}</div>)}
+            </div>
+          </div>
+        )}
+
         {/* Alerts */}
         <div style={{borderBottom:"1px solid #1E293B"}}>
           <div onClick={()=>setAlertsOpen(o=>!o)} style={{padding:"10px 14px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",userSelect:"none"}}>
@@ -1507,8 +1975,27 @@ export default function App() {
               </div>
             )}
 
+            {dependencyImpact&&(
+              <div style={{marginTop:10,padding:"8px 10px",background:"#111827",border:"1px solid #1F2937",borderRadius:8}}>
+                <div style={{fontSize:10,color:"#93C5FD",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Bağımlılık etkisi</div>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap",fontSize:11,marginBottom:6}}>
+                  <span style={{color:"#CBD5E1"}}>Doğrudan upstream: <b>{dependencyImpact.directUpstream.length}</b></span>
+                  <span style={{color:"#CBD5E1"}}>Doğrudan downstream: <b>{dependencyImpact.directDownstream.length}</b></span>
+                  <span style={{color:"#FCA5A5"}}>Etkilenebilecek kaynak: <b>{dependencyImpact.impactedWorkloads.length}</b></span>
+                </div>
+                <div style={{fontSize:10,color:"#94A3B8",lineHeight:1.45}}>
+                  {dependencyImpact.directUpstream.slice(0,3).map(n=><div key={`up-${n.id}`}>↑ {n.kind} {n.namespace}/{maskSecrets&&n.kind==="Secret"?"••••":n.name}</div>)}
+                  {dependencyImpact.directDownstream.slice(0,4).map(n=><div key={`dn-${n.id}`}>↓ {n.kind} {n.namespace}/{maskSecrets&&n.kind==="Secret"?"••••":n.name}</div>)}
+                </div>
+              </div>
+            )}
+
             <div style={{marginTop:12}}>
               {[[ "Ad", maskSecrets&&selected.kind==="Secret"?"••••":selected.name, "monospace"],["Namespace",selected.namespace],["Durum",selected.status],
+                ...(selected.kind==="Node"&&selected.nodeRoles?.length?[["Rol",selected.nodeRoles.join(", ")]]:[]),
+                ...(selected.kind==="Node"&&selected.nodeVersion?[["Kubelet",selected.nodeVersion]]:[]),
+                ...(selected.kind==="Pod"&&selected.nodeName?[["Node",selected.nodeName]]:[]),
+                ...(selected.kind==="Node"&&selected.podCount!=null?[["Pod sayısı",String(selected.podCount)]]:[]),
                 ...(selected.restarts>0?[["Yeniden Başlama",`${selected.restarts} kez`]]:[]),
                 ...(selected.cpuPercent!=null?[["CPU Kullanımı",`%${selected.cpuPercent}`,null,selected.cpuPercent>80?"#EF4444":selected.cpuPercent>60?"#F59E0B":"#22C55E"]]:[]),
                 ...(selected.metricsCpuMilli!=null&&selected.cpuPercent==null?[["CPU (metrics)",`${selected.metricsCpuMilli}m`,null,"#94A3B8"]]:[]),
@@ -1525,6 +2012,64 @@ export default function App() {
               <div style={{marginTop:10,marginBottom:4}}>
                 <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Container imajları</div>
                 <div style={{fontSize:11,fontFamily:"ui-monospace,monospace",color:"#CBD5E1",whiteSpace:"pre-wrap",wordBreak:"break-all",lineHeight:1.45}}>{selected.podImageInfo}</div>
+              </div>
+            )}
+
+            {selected.kind==="Node"&&selected.nodePressure?.length>0&&(
+              <div style={{marginTop:10,marginBottom:4}}>
+                <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Node condition</div>
+                <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.45}}>
+                  {selected.nodePressure.map(p=>(
+                    <div key={p.type} style={{color:p.status?"#FCD34D":"#64748B"}}>{p.type}: {p.status?"aktif":"yok"}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selected.resources&&(
+              <div style={{marginTop:10,marginBottom:4}}>
+                <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>İstek / limit</div>
+                <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.5}}>
+                  {selected.resources.reqCpuMilli!=null&&<div>CPU istek: {formatCpuRequestMilli(selected.resources.reqCpuMilli)}</div>}
+                  {selected.resources.limCpuMilli!=null&&<div>CPU limit: {formatCpuRequestMilli(selected.resources.limCpuMilli)}</div>}
+                  {selected.resources.reqMemMi!=null&&<div>Memory istek: {formatMemoryMi(selected.resources.reqMemMi)}</div>}
+                  {selected.resources.limMemMi!=null&&<div>Memory limit: {formatMemoryMi(selected.resources.limMemMi)}</div>}
+                  {selected.metricsCpuMilli!=null&&selected.resources.reqCpuMilli!=null&&(
+                    <div style={{color:selected.metricsCpuMilli>selected.resources.reqCpuMilli?"#FCD34D":"#86EFAC"}}>
+                      Canlı CPU / istek: {selected.metricsCpuMilli}m / {selected.resources.reqCpuMilli}m
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {selected.rollout&&(
+              <div style={{marginTop:10,marginBottom:4}}>
+                <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Rollout</div>
+                <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.5}}>
+                  {selected.rollout.revision&&<div>Revizyon: {selected.rollout.revision}</div>}
+                  {selected.rollout.changeCause&&<div>Change cause: {selected.rollout.changeCause}</div>}
+                  {selected.rollout.owners?.length>0&&<div>Sahip: {selected.rollout.owners.join(", ")}</div>}
+                  {rolloutNodes.length>0&&(
+                    <div style={{marginTop:4,color:"#93C5FD"}}>
+                      İlgili {selected.kind==="Deployment"?"ReplicaSet":"Pod"}: {rolloutNodes.slice(0,4).map(n=>n.name).join(", ")}{rolloutNodes.length>4?" …":""}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {selectedEvents.length>0&&(
+              <div style={{marginTop:10,marginBottom:4}}>
+                <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Kaynağa özel event</div>
+                <div style={{maxHeight:120,overflowY:"auto",fontSize:10,lineHeight:1.45}}>
+                  {selectedEvents.slice(0,6).map(ev=>(
+                    <div key={`sel-ev-${ev.id}`} style={{padding:"4px 0",borderBottom:"1px solid #0F172A"}}>
+                      <div style={{color:ev.type==="Warning"?"#F59E0B":"#94A3B8"}}>{ev.reason||"—"} <span style={{color:"#475569"}}>{ev.last?new Date(ev.last).toLocaleTimeString():""}</span></div>
+                      <div style={{color:"#CBD5E1"}}>{ev.msg}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

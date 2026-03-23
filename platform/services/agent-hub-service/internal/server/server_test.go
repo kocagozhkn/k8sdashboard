@@ -10,15 +10,12 @@ import (
 
 func TestHealthz(t *testing.T) {
 	h := handler.NewHub()
-	srv := httptest.NewServer(NewRouter(h))
-	defer srv.Close()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
 
-	res, err := http.Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status %d", res.StatusCode)
+	NewRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
 	}
 }

@@ -39,13 +39,13 @@ The API base in the browser is usually `http://127.0.0.1:8001`. You can also use
 npm run build
 ```
 
-If `postbuild` is defined, it may run commit + `git push`. Build only:
+`postbuild` git push is opt-in. Only enable it when you explicitly want a build-triggered commit/push:
 
 ```bash
-DOCKER_BUILD=1 npm run build
+ALLOW_POSTBUILD_PUSH=1 npm run build
 ```
 
-Image (Dockerfile sets `DOCKER_BUILD=1` so postbuild is skipped):
+Image builds do not need special handling because the hook is skipped by default:
 
 ```bash
 docker build -t <registry>/k8s-topology:latest .

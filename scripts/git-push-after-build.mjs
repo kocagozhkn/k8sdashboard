@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Runs after `vite build` (npm postbuild). Commits any staged changes and pushes.
- * Skipped in Docker (DOCKER_BUILD=1) and in CI (CI=true) unless ALLOW_POSTBUILD_PUSH=1.
+ * Opt-in only: skipped unless ALLOW_POSTBUILD_PUSH=1.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -9,12 +9,8 @@ import path from 'node:path'
 
 const root = process.cwd()
 
-if (process.env.DOCKER_BUILD === '1') {
-  console.log('[postbuild] skip git push (DOCKER_BUILD)')
-  process.exit(0)
-}
-if (process.env.CI === 'true' && process.env.ALLOW_POSTBUILD_PUSH !== '1') {
-  console.log('[postbuild] skip git push (CI)')
+if (process.env.ALLOW_POSTBUILD_PUSH !== '1') {
+  console.log('[postbuild] skip git push (ALLOW_POSTBUILD_PUSH!=1)')
   process.exit(0)
 }
 if (!fs.existsSync(path.join(root, '.git'))) {
