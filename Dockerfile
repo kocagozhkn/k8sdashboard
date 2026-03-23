@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
+ENV DOCKER_BUILD=1
 RUN npm run build
 
 FROM nginx:alpine

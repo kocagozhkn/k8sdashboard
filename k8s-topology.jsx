@@ -1,5 +1,14 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import * as d3 from "d3";
+import { CLUSTER_PRESETS, resolvePresetApiBase } from "./cluster-presets.js";
+import {
+  parseKubeconfigYaml,
+  listKubeconfigContexts,
+  resolveKubeconfigContext,
+  loadKubeconfigFromStorage,
+  saveKubeconfigToStorage,
+  clearKubeconfigStorage,
+} from "./kubeconfig-utils.js";
 
 const KINDS = {
   Ingress:               { color: "#A855F7", tag: "ING" },
@@ -340,11 +349,31 @@ export default function App() {
   const [nsFilter,setNsFilter]=useState("all");
   const [typeFilters,setTypeFilters]=useState(new Set(Object.keys(KINDS)));
   const [rawInput,setRawInput]=useState("");
-  const [apiUrl,setApiUrl]=useState("http://localhost:8001");
+  const [apiUrl,setApiUrl]=useState(()=>{
+    if(typeof window==="undefined") return "http://127.0.0.1:8001";
+    const h=window.location.hostname;
+    if(h==="localhost"||h==="127.0.0.1") return "http://127.0.0.1:8001";
+    return `${window.location.origin.replace(/\/$/,"")}/k8s-api`;
+  });
   const [err,setErr]=useState("");
   const [loading,setLoading]=useState(false);
   const [alertsOpen,setAlertsOpen]=useState(true);
+  const [clusterPresetId,setClusterPresetId]=useState(()=>CLUSTER_PRESETS[0]?.id||"");
+  const [kubeconfigYaml,setKubeconfigYaml]=useState("");
+  const [kubeContexts,setKubeContexts]=useState([]);
+  const [apiFetchHeaders,setApiFetchHeaders]=useState({});
+  const fileInputRef=useRef(null);
   const svgRef=useRef(null);
+
+  useEffect(()=>{
+    const s=loadKubeconfigFromStorage();
+    if(!s.trim()) return;
+    setKubeconfigYaml(s);
+    try{
+      const doc=parseKubeconfigYaml(s);
+      setKubeContexts(listKubeconfigContexts(doc));
+    }catch{ setKubeContexts([]); }
+  },[]);
 
   const filtered=useMemo(()=>{
     if(!graphData) return {nodes:[],edges:[]};
@@ -363,17 +392,23 @@ export default function App() {
   const namespaces=useMemo(()=>[...new Set((graphData?.nodes||[]).map(n=>n.namespace))].sort(),[graphData]);
   const kindCounts=useMemo(()=>{const c={};(graphData?.nodes||[]).forEach(n=>c[n.kind]=(c[n.kind]||0)+1);return c;},[graphData]);
 
-  const loadDemo=()=>{setGraphData(DEMO);setSelected(null);setNsFilter("all");setScreen("graph");};
+  const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter("all");setScreen("graph");};
   const applyInput=()=>{setErr("");try{setGraphData(parseKubectl(rawInput));setSelected(null);setNsFilter("all");setScreen("graph");}catch(e){setErr("JSON hatası: "+e.message);}};
-  const fetchAPI=async()=>{
+  const fetchAPI=async(apiBaseOverride,opts={})=>{
     setLoading(true);setErr("");const results=[];
-    const tf=async(url)=>{try{const r=await fetch(url);if(r.ok){const d=await r.json();results.push(...(d.items||[]));}catch{}}};
-    const base=apiUrl.replace(/\/$/,"");
+    const hdr={...apiFetchHeaders,...(opts.headers||{})};
+    const tf=async(url)=>{try{const r=await fetch(url,{headers:hdr});if(r.ok){const d=await r.json();results.push(...(d.items||[]));}}catch{}};
+    const base=(apiBaseOverride??apiUrl).replace(/\/$/,"");
     await Promise.all(["pods","services","configmaps","secrets","persistentvolumeclaims"].map(r=>tf(`${base}/api/v1/${r}`)));
     await Promise.all(["deployments","statefulsets","daemonsets","replicasets"].map(r=>tf(`${base}/apis/apps/v1/${r}`)));
     await tf(`${base}/apis/networking.k8s.io/v1/ingresses`);
     await Promise.all(["jobs","cronjobs"].map(r=>tf(`${base}/apis/batch/v1/${r}`)));
-    if(!results.length){setErr("Hiç kaynak bulunamadı. kubectl proxy çalışıyor mu?");setLoading(false);return;}
+    if(!results.length){
+      const corsHint=hdr.Authorization?" Çoğu kümede API sunucusu tarayıcıdan CORS izin vermez; bu durumda kubectl proxy --port=8001 ve API URL http://127.0.0.1:8001 kullanın.":"";
+      setErr("Hiç kaynak bulunamadı. Yerelde: kubectl proxy --port=8001. Kümede: …/k8s-api veya token ile doğrudan API (CORS kısıtı mümkün)."+corsHint);
+      setLoading(false);
+      return;
+    }
     try{setGraphData(parseKubectl(JSON.stringify({kind:"List",items:results})));setSelected(null);setNsFilter("all");setScreen("graph");}catch(e){setErr(e.message);}
     setLoading(false);
   };
@@ -395,8 +430,8 @@ export default function App() {
       </div>
       <div style={{display:"flex",gap:14,flexWrap:"wrap",justifyContent:"center"}}>
         {[{icon:"🎮",title:"Demo Modu",sub:"Hata & bottleneck örnekleriyle",color:"#3B82F6",action:loadDemo},
-          {icon:"📋",title:"kubectl Yapıştır",sub:"kubectl get all -A -o json",color:"#A855F7",action:()=>setScreen("input")},
-          {icon:"🔌",title:"Canlı API",sub:"kubectl proxy ile",color:"#22C55E",action:()=>setScreen("api")},
+          {icon:"📋",title:"kubectl Yapıştır",sub:"kubectl get all -A -o json",color:"#A855F7",action:()=>{setErr("");setScreen("input");}},
+          {icon:"🔌",title:"Canlı API",sub:"Kümede pod proxy · yerelde kubectl proxy",color:"#22C55E",action:()=>{setErr("");setScreen("api");}},
         ].map(({icon,title,sub,color,action})=>(
           <div key={title} onClick={action} style={{background:"#0F172A",border:`1px solid ${color}33`,borderRadius:14,padding:"24px 32px",cursor:"pointer",minWidth:185,textAlign:"center",transition:"border-color .2s"}}
             onMouseEnter={e=>e.currentTarget.style.borderColor=color} onMouseLeave={e=>e.currentTarget.style.borderColor=color+"33"}>
@@ -405,6 +440,114 @@ export default function App() {
             <div style={{fontSize:11,color:"#64748B",marginTop:4}}>{sub}</div>
           </div>
         ))}
+      </div>
+      <div style={{width:"100%",maxWidth:620,background:"#0F172A",border:"1px solid #6366F133",borderRadius:14,padding:"18px 20px",boxSizing:"border-box",display:"flex",flexDirection:"column",gap:16}}>
+        <div>
+          <div style={{fontSize:11,color:"#6366F1",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Ön tanımlı küme</div>
+          <div style={{fontSize:13,color:"#94A3B8",marginBottom:12}}>Hazır hedefler. Yerelde çoğu zaman önce <code style={{color:"#E2E8F0",background:"#020817",padding:"2px 6px",borderRadius:4}}>kubectl config use-context …</code> ve gerekirse <code style={{color:"#E2E8F0",background:"#020817",padding:"2px 6px",borderRadius:4}}>kubectl proxy --port=8001</code>.</div>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"stretch"}}>
+            <select
+              value={clusterPresetId}
+              onChange={e=>setClusterPresetId(e.target.value)}
+              style={{flex:"1 1 220px",minWidth:0,background:"#020817",border:"1px solid #1E293B",borderRadius:8,color:"#E2E8F0",fontSize:14,padding:"10px 12px",cursor:"pointer"}}
+            >
+              <optgroup label="Ön tanımlı">
+                {CLUSTER_PRESETS.map(p=>(
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </optgroup>
+              {kubeContexts.length>0&&(
+                <optgroup label="kubeconfig">
+                  {kubeContexts.map(c=>(
+                    <option key={c.name} value={`kc:${c.name}`}>{c.name}{c.hasToken?"":" · token yok"}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={async()=>{
+                if(clusterPresetId.startsWith("kc:")){
+                  const ctxName=clusterPresetId.slice(3);
+                  let doc;
+                  try{doc=parseKubeconfigYaml(kubeconfigYaml);}catch{
+                    setErr("Önce geçerli kubeconfig yapıştırın veya dosyadan yükleyin.");
+                    return;
+                  }
+                  const r=resolveKubeconfigContext(doc,ctxName);
+                  if(!r){setErr("Context çözülemedi.");return;}
+                  if(r.exec){
+                    setErr(`Bu context exec kullanıyor (OIDC vb.). Tarayıcı çalıştıramaz. Terminal: kubectl config use-context ${ctxName} && kubectl proxy --port=8001 — sonra API URL http://127.0.0.1:8001`);
+                    return;
+                  }
+                  if(r.clientCertificateData&&r.clientKeyData&&!r.token){
+                    setErr("Bu context istemci sertifikası kullanıyor; tarayıcıda kullanılamaz. kubectl proxy --port=8001 deneyin.");
+                    return;
+                  }
+                  if(!r.token){
+                    setErr("kubeconfig içinde bu kullanıcı için token yok. kubectl proxy veya token içeren bir context seçin.");
+                    return;
+                  }
+                  const base=r.server.replace(/\/$/,"");
+                  setApiUrl(base);
+                  const auth={Authorization:`Bearer ${r.token}`};
+                  setApiFetchHeaders(auth);
+                  setErr("");
+                  await fetchAPI(base,{headers:auth});
+                  return;
+                }
+                const preset=CLUSTER_PRESETS.find(p=>p.id===clusterPresetId);
+                const resolved=resolvePresetApiBase(preset);
+                if(!resolved){
+                  setErr(preset?.id==="cortex-qa-aks"?"QA için VITE_K8S_API_CORTEX_QA_AKS (QA /k8s-api tam URL) build ortamında tanımlı olmalı.":"Bu küme için API adresi yok.");
+                  return;
+                }
+                setApiUrl(resolved);
+                setApiFetchHeaders({});
+                setErr("");
+                await fetchAPI(resolved);
+              }}
+              style={{background:"#6366F1",border:"none",color:"#fff",borderRadius:8,padding:"10px 20px",cursor:loading?"wait":"pointer",fontWeight:600,fontSize:13,whiteSpace:"nowrap"}}
+            >{loading?"…":"Bağlan →"}</button>
+          </div>
+        </div>
+        <div style={{borderTop:"1px solid #1E293B",paddingTop:16}}>
+          <div style={{fontSize:11,color:"#22C55E",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>kubeconfig</div>
+          <p style={{fontSize:12,color:"#64748B",margin:"0 0 10px",lineHeight:1.5}}>Tarayıcı güvenliği nedeniyle <b style={{color:"#94A3B8"}}>~/.kube/config</b> otomatik okunmaz. İçeriği yapıştırın veya dosyayı seçin. Token’lı context’ler üstteki listede görünür; doğrudan API çağrısı birçok kümede <b style={{color:"#94A3B8"}}>CORS</b> yüzünden başarısız olur — o zaman <code style={{color:"#E2E8F0",background:"#020817",padding:"2px 6px",borderRadius:4}}>kubectl proxy</code> kullanın.</p>
+          <input ref={fileInputRef} type="file" accept=".yaml,.yml,.config,text/*" style={{display:"none"}} onChange={async(e)=>{
+            const f=e.target.files?.[0];
+            if(!f)return;
+            try{
+              const t=await f.text();
+              setKubeconfigYaml(t);
+              const doc=parseKubeconfigYaml(t);
+              setKubeContexts(listKubeconfigContexts(doc));
+              setErr("");
+            }catch(ex){setKubeContexts([]);setErr(ex.message||String(ex));}
+            e.target.value="";
+          }}/>
+          <textarea
+            value={kubeconfigYaml}
+            onChange={e=>setKubeconfigYaml(e.target.value)}
+            placeholder="apiVersion: v1&#10;kind: Config&#10;clusters: …"
+            spellCheck={false}
+            style={{width:"100%",minHeight:120,boxSizing:"border-box",background:"#020817",border:"1px solid #1E293B",borderRadius:8,color:"#E2E8F0",fontFamily:"ui-monospace,monospace",fontSize:11,padding:12,resize:"vertical",outline:"none",marginBottom:10}}
+          />
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+            <button type="button" onClick={()=>fileInputRef.current?.click()} style={{background:"#14532D",border:"1px solid #166534",color:"#BBF7D0",borderRadius:8,padding:"8px 14px",cursor:"pointer",fontSize:12,fontWeight:600}}>Dosya seç</button>
+            <button type="button" onClick={()=>{
+              try{
+                const doc=parseKubeconfigYaml(kubeconfigYaml);
+                setKubeContexts(listKubeconfigContexts(doc));
+                setErr("");
+              }catch(ex){setKubeContexts([]);setErr(ex.message||String(ex));}
+            }} style={{background:"#0F172A",border:"1px solid #334155",color:"#CBD5E1",borderRadius:8,padding:"8px 14px",cursor:"pointer",fontSize:12}}>Context listesini güncelle</button>
+            <button type="button" onClick={()=>{saveKubeconfigToStorage(kubeconfigYaml);setErr("");}} style={{background:"#0F172A",border:"1px solid #334155",color:"#CBD5E1",borderRadius:8,padding:"8px 14px",cursor:"pointer",fontSize:12}}>Tarayıcıda sakla</button>
+            <button type="button" onClick={()=>{clearKubeconfigStorage();setKubeconfigYaml("");setKubeContexts([]);setErr("");}} style={{background:"#450A0A",border:"1px solid #7F1D1D",color:"#FCA5A5",borderRadius:8,padding:"8px 14px",cursor:"pointer",fontSize:12}}>Temizle</button>
+          </div>
+        </div>
+        {err&&<div style={{color:"#FCA5A5",fontSize:13,background:"#450A0A",padding:"10px 12px",borderRadius:8}}>{err}</div>}
       </div>
       <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center",maxWidth:580}}>
         {[{l:"🔴 Critical",c:"#EF4444",t:"CrashLoop, OOMKilled, Evicted, PVC sorunları"},
@@ -439,13 +582,14 @@ export default function App() {
     <div style={{background:"#020817",minHeight:"100vh",color:"#E2E8F0",fontFamily:"system-ui,sans-serif",display:"flex",flexDirection:"column",padding:24,gap:14,maxWidth:620,margin:"0 auto"}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>{ghostBtn("← Geri",()=>setScreen("home"))}<h2 style={{margin:0,fontSize:18,fontWeight:700}}>Kubernetes API Bağlantısı</h2></div>
       <div style={{background:"#0F172A",borderRadius:10,padding:14,border:"1px solid #1E293B",fontSize:13}}>
-        <div style={{color:"#22C55E",fontWeight:600,marginBottom:6}}>kubectl proxy başlatın:</div>
-        <code style={{color:"#E2E8F0",background:"#020817",display:"block",padding:"8px 12px",borderRadius:6}}>kubectl proxy --port=8001</code>
+        <div style={{color:"#22C55E",fontWeight:600,marginBottom:6}}>Yerel geliştirme:</div>
+        <code style={{color:"#E2E8F0",background:"#020817",display:"block",padding:"8px 12px",borderRadius:6,marginBottom:10}}>kubectl proxy --port=8001</code>
+        <div style={{color:"#64748B",fontSize:12}}>Bu uygulama Ingress üzerinden açıldığında varsayılan olarak aynı sitedeki <b style={{color:"#94A3B8"}}>/k8s-api</b> üzerinden pod içi proxy kullanılır (ek bir komut gerekmez).</div>
       </div>
       <div><label style={{fontSize:12,color:"#64748B",display:"block",marginBottom:6}}>API URL</label>
         <input value={apiUrl} onChange={e=>setApiUrl(e.target.value)} style={{width:"100%",background:"#0F172A",border:"1px solid #1E293B",borderRadius:8,color:"#E2E8F0",fontSize:14,padding:"10px 14px",outline:"none",boxSizing:"border-box"}}/></div>
       {err&&<div style={{color:"#EF4444",fontSize:13,background:"#450A0A",padding:"8px 14px",borderRadius:8}}>{err}</div>}
-      <div style={{display:"flex",gap:10}}>{btn(loading?"Bağlanıyor...":"Bağlan ve Keşfet →",fetchAPI,"#22C55E","#000")} {ghostBtn("Demo",loadDemo)}</div>
+      <div style={{display:"flex",gap:10}}>{btn(loading?"Bağlanıyor...":"Bağlan ve Keşfet →",()=>fetchAPI(),"#22C55E","#000")} {ghostBtn("Demo",loadDemo)}</div>
     </div>
   );
 
