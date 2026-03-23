@@ -621,7 +621,12 @@ function parseKubectl(jsonStr) {
     });
     rawItems.push({...full,_id:id});
   }
-  return {nodes,edges:buildEdges(nodes,rawItems)};
+  const baseEdges = buildEdges(nodes,rawItems);
+  const azureGraph = buildAzureDependencyGraph(rawItems);
+  return {
+    nodes:[...nodes,...azureGraph.nodes],
+    edges:[...baseEdges,...azureGraph.edges],
+  };
 }
 
 function mergePodMetricsFromApi(items, metricsDoc) {
@@ -989,7 +994,7 @@ export default function App() {
   const [graphData,setGraphData]=useState(null);
   const [selected,setSelected]=useState(null);
   const [nsFilter,setNsFilter]=useState("default");
-  const [typeFilters,setTypeFilters]=useState(() => new Set(["Pod","Node"]));
+  const [typeFilters,setTypeFilters]=useState(() => new Set(["Pod","Node","AzureService"]));
   const [nameFilter,setNameFilter]=useState("");
   const [healthFilter,setHealthFilter]=useState("all");
   const [rawInput,setRawInput]=useState("");
@@ -1156,6 +1161,15 @@ export default function App() {
   const historyDiff=useMemo(()=>compareGraphToSnapshot(graphData, snapshotHistory.find(s=>s.id===compareSnapshotId)||null),[graphData,snapshotHistory,compareSnapshotId]);
   const selectedEvents=useMemo(()=>eventsForSelectedNode(detailNode || selected, clusterEvents),[detailNode,selected,clusterEvents]);
   const rolloutNodes=useMemo(()=>rolloutRelatedNodes(detailNode || selected, graphWithTraffic.nodes),[detailNode,selected,graphWithTraffic]);
+  const selectedAzureDeps=useMemo(()=>{
+    const current = detailNode || selected;
+    if(!current) return [];
+    const out = graphWithTraffic.edges
+      .filter(e=>e.source===current.id && e.type==="azure")
+      .map(e=>graphWithTraffic.nodes.find(n=>n.id===e.target))
+      .filter(Boolean);
+    return out;
+  },[detailNode,selected,graphWithTraffic]);
 
   useEffect(()=>{
     if(!selected) return;
@@ -2021,6 +2035,32 @@ export default function App() {
                 <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.45}}>
                   {selected.nodePressure.map(p=>(
                     <div key={p.type} style={{color:p.status?"#FCD34D":"#64748B"}}>{p.type}: {p.status?"aktif":"yok"}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selected.kind==="AzureService"&&(
+              <div style={{marginTop:10,marginBottom:4}}>
+                <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Azure servis bilgisi</div>
+                <div style={{fontSize:11,color:"#CBD5E1",lineHeight:1.5}}>
+                  <div>Tür: {selected.azureServiceType || "Azure Service"}</div>
+                  <div>Güven: <span style={{color:selected.azureConfidence==="confirmed"?"#86EFAC":"#FCD34D"}}>{selected.azureConfidence==="confirmed"?"Confirmed":"Inferred"}</span></div>
+                  <div>Kanıt: {selected.azureEvidence || "metadata"}</div>
+                </div>
+              </div>
+            )}
+
+            {selectedAzureDeps.length>0&&selected.kind!=="AzureService"&&(
+              <div style={{marginTop:10,marginBottom:4}}>
+                <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Azure Dependencies</div>
+                <div style={{fontSize:11,lineHeight:1.45}}>
+                  {selectedAzureDeps.map(dep=>(
+                    <div key={dep.id} onClick={()=>setSelected(dep)} style={{cursor:"pointer",padding:"4px 0",borderBottom:"1px solid #0F172A"}}>
+                      <span style={{color:"#60A5FA"}}>{dep.azureServiceType || "Azure Service"}</span>
+                      <span style={{color:"#CBD5E1"}}> · {dep.name}</span>
+                      <span style={{color:dep.azureConfidence==="confirmed"?"#86EFAC":"#FCD34D"}}> · {dep.azureConfidence==="confirmed"?"Confirmed":"Inferred"}</span>
+                    </div>
                   ))}
                 </div>
               </div>
