@@ -9,6 +9,13 @@ import {
   saveKubeconfigToStorage,
   clearKubeconfigStorage,
 } from "./kubeconfig-utils.js";
+import {
+  fetchMeshTrafficStats,
+  mergeTrafficIntoGraph,
+  formatShortRps,
+  MESH_PROFILES,
+  topInboundServices,
+} from "./mesh-prometheus.js";
 
 function isLocalViteDev() {
   if (typeof window === "undefined") return false;
@@ -472,8 +479,9 @@ function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opts = {})
       .attr("stroke-opacity",d=>{const sh=nodeHealthLevel(d.source,issues),th=nodeHealthLevel(d.target,issues);return(sh==="critical"||th==="critical")?0.75:0.35;})
       .attr("stroke-dasharray",d=>{const sh=nodeHealthLevel(d.source,issues),th=nodeHealthLevel(d.target,issues);return(sh==="critical"||th==="critical")?"7,3":null;})
       .attr("marker-end",d=>`url(#arr-${d.type})`);
-    const linkLbl=linkG.selectAll("text").data(sE.filter(e=>e.label)).join("text")
-      .attr("text-anchor","middle").attr("fill","#A855F7").attr("font-size","9px").attr("font-family","monospace").text(d=>d.label);
+    const linkLbl=linkG.selectAll("text").data(sE.filter(e=>e.label||e.trafficLabel)).join("text")
+      .attr("text-anchor","middle").attr("fill",d=>d.trafficLabel&&!d.label?"#22D3EE":"#A855F7").attr("font-size","9px").attr("font-family","monospace")
+      .text(d=>(d.label&&d.trafficLabel)?`${d.label} · ${d.trafficLabel}`:(d.label||d.trafficLabel||""));
 
     const nodeG=g.append("g");
     const node=nodeG.selectAll("g").data(sN).join("g").style("cursor","pointer")
@@ -533,7 +541,11 @@ function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opts = {})
         if(d.cpuPercent!=null) parts.push(`CPU:${d.cpuPercent}%`);
         else if(d.metricsCpuMilli!=null) parts.push(`CPU:${d.metricsCpuMilli}m`);
         if(d.memPercent!=null) parts.push(`MEM:${d.memPercent}%`);
-        return parts.join("  ");
+        if(d.trafficInRps!=null) parts.push(`↓${formatShortRps(d.trafficInRps)}rps`);
+        if(d.trafficOutRps!=null) parts.push(`↑${formatShortRps(d.trafficOutRps)}rps`);
+        if(d.trafficErrRatio>0.02) parts.push(`${(d.trafficErrRatio*100).toFixed(0)}%err`);
+        const line=parts.join("  ");
+        return line.length>38?line.slice(0,37)+"…":line;
       });
 
     // Restart badge
@@ -563,6 +575,17 @@ function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opts = {})
     });
     return ()=>sim.stop();
   },[nodes,edges,issues,selectedId,namespaceLanes,maskSecrets]);
+}
+
+function prometheusUrlInitial() {
+  if (typeof window === "undefined") return "";
+  try {
+    const saved = localStorage.getItem("k8s-topology-prometheus-url");
+    if (saved != null) return saved;
+  } catch { /* */ }
+  const o = window.location.origin.replace(/\/$/, "");
+  if (isLocalViteDev()) return `${o}/prometheus`;
+  return `${o}/prometheus`;
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -603,6 +626,12 @@ export default function App() {
   const [podLogErr,setPodLogErr]=useState("");
   const [podLogContainer,setPodLogContainer]=useState("");
   const [podLogTick,setPodLogTick]=useState(0);
+  const [prometheusUrl,setPrometheusUrl]=useState(prometheusUrlInitial);
+  const [meshProfile,setMeshProfile]=useState("istio");
+  const [meshStats,setMeshStats]=useState(null);
+  const [meshErr,setMeshErr]=useState("");
+  const [meshLoading,setMeshLoading]=useState(false);
+  const [meshFetchedAt,setMeshFetchedAt]=useState(null);
   const [rightPanelWidth,setRightPanelWidth]=useState(()=>{
     if (typeof window === "undefined") return 278;
     try {
@@ -632,6 +661,31 @@ export default function App() {
     setNameFilter("");
     setHealthFilter("all");
   },[graphData]);
+
+  useEffect(()=>{
+    try{localStorage.setItem("k8s-topology-prometheus-url",prometheusUrl);}catch{/* */}
+  },[prometheusUrl]);
+
+  const loadMeshTraffic=useCallback(async()=>{
+    if(meshProfile==="off"||!prometheusUrl.trim()){
+      setMeshStats(null);
+      setMeshErr("");
+      setMeshLoading(false);
+      return;
+    }
+    setMeshLoading(true);
+    setMeshErr("");
+    try{
+      const s=await fetchMeshTrafficStats(prometheusUrl.trim(),meshProfile);
+      setMeshStats(s);
+      setMeshFetchedAt(new Date());
+    }catch(e){
+      setMeshErr(e.message||String(e));
+      setMeshStats(null);
+    }finally{
+      setMeshLoading(false);
+    }
+  },[prometheusUrl,meshProfile]);
 
   useEffect(()=>{ rightPanelDragWRef.current = rightPanelWidth; }, [rightPanelWidth]);
 
@@ -685,11 +739,31 @@ export default function App() {
     const ids=new Set(nodes.map(n=>n.id));
     return {nodes,edges:shapeFiltered.edges.filter(e=>ids.has(e.source)&&ids.has(e.target))};
   },[shapeFiltered,healthFilter,issues]);
+
+  const graphWithTraffic=useMemo(()=>{
+    if(!meshStats||meshProfile==="off") return filtered;
+    return mergeTrafficIntoGraph(filtered,meshStats);
+  },[filtered,meshStats,meshProfile]);
+
+  const detailNode=useMemo(()=>{
+    if(!selected) return null;
+    return graphWithTraffic.nodes.find(n=>n.id===selected.id)||selected;
+  },[selected,graphWithTraffic]);
+
+  const hotServices=useMemo(()=>topInboundServices(meshStats,8),[meshStats]);
+
+  useEffect(()=>{
+    if(meshProfile==="off"){
+      setMeshStats(null);
+      setMeshErr("");
+    }
+  },[meshProfile]);
+
   const critCount=issues.filter(i=>i.level==="critical").length;
   const warnCount=issues.filter(i=>i.level==="warning").length;
   const infoCount=issues.filter(i=>i.level==="info").length;
 
-  useGraph(svgRef,graphView==="graph"?filtered.nodes:[],graphView==="graph"?filtered.edges:[],issues,selected?.id,(n)=>setSelected(n),{namespaceLanes,maskSecrets});
+  useGraph(svgRef,graphView==="graph"?graphWithTraffic.nodes:[],graphView==="graph"?graphWithTraffic.edges:[],issues,selected?.id,(n)=>setSelected(n),{namespaceLanes,maskSecrets});
 
   const namespaces=useMemo(()=>[...new Set((graphData?.nodes||[]).map(n=>n.namespace))].sort(),[graphData]);
   const nsSelectValue=useMemo(()=>{
@@ -756,8 +830,8 @@ export default function App() {
     return c;
   },[graphData,nsFilter,nameFilter]);
 
-  const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter(pickInitialNamespace(DEMO.nodes));setScreen("graph");};
-  const applyInput=()=>{setErr("");try{const p=parseKubectl(rawInput);setGraphData(p);setSelected(null);setNsFilter(pickInitialNamespace(p.nodes));setScreen("graph");}catch(e){setErr("JSON hatası: "+e.message);}};
+  const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter(pickInitialNamespace(DEMO.nodes));setScreen("graph");void loadMeshTraffic();};
+  const applyInput=()=>{setErr("");try{const p=parseKubectl(rawInput);setGraphData(p);setSelected(null);setNsFilter(pickInitialNamespace(p.nodes));setScreen("graph");void loadMeshTraffic();}catch(e){setErr("JSON hatası: "+e.message);}};
   const fetchAPI=useCallback(async(apiBaseOverride,opts={})=>{
     setLoading(true);setErr("");
     const results=[];
@@ -824,6 +898,7 @@ export default function App() {
       const pfHint=!isLocalViteDev()&&typeof window!=="undefined"&&(window.location.hostname==="localhost"||window.location.hostname==="127.0.0.1")?" Port-forward kullanıyorsanız adresin http://localhost:PORT şeklinde olduğundan ve API’nin aynı PORT üzerinden /k8s-api ile geldiğinden emin olun (127.0.0.1:8001 laptop’taki kubectl proxy içindir).":"";
       const failTail=failures.length?` Detay: ${failures.slice(0,3).join(" · ")}${failures.length>3?" …":""}`:"";
       setErr("API’den kayıt alınamadı (liste boş veya tüm istekler başarısız). LB veya port-forward ile açıyorsanız sayfa adresi ile /k8s-api aynı origin’de olmalı. Önbellek için hard refresh deneyin."+corsHint+pfHint+failTail);
+      setMeshStats(null);
       setLoading(false);
       return;
     }
@@ -835,9 +910,10 @@ export default function App() {
       setNsFilter(pickInitialNamespace(parsed.nodes));
       setScreen("graph");
       setLastRefreshAt(new Date());
+      void loadMeshTraffic();
     }catch(e){setErr(e.message);}
     setLoading(false);
-  },[apiUrl,apiFetchHeaders]);
+  },[apiUrl,apiFetchHeaders,loadMeshTraffic]);
 
   fetchAPIRef.current=fetchAPI;
 
@@ -1188,6 +1264,10 @@ export default function App() {
               <span style={{fontSize:10,color:"#64748B"}}>{EDGE_LEGEND_TR[t]||t}</span>
             </div>
           ))}
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
+            <div style={{width:18,height:2,background:"#22D3EE",borderRadius:1}}/>
+            <span style={{fontSize:10,color:"#64748B"}}>Mesh RPS (Prometheus)</span>
+          </div>
         </div>
       </div>
 
@@ -1237,9 +1317,26 @@ export default function App() {
             </label>
             {diffSummary&&<span style={{fontSize:10,color:"#A78BFA"}}>Δ +{diffSummary.added} / −{diffSummary.removed} (toplam {diffSummary.total})</span>}
           </div>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",maxWidth:"100%"}}>
+            <span style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:0.5}}>Mesh / Prometheus</span>
+            <select value={meshProfile} onChange={e=>setMeshProfile(e.target.value)} style={{background:"#0F172A",border:"1px solid #1E293B",borderRadius:6,color:"#94A3B8",fontSize:11,padding:"4px 8px",cursor:"pointer"}}>
+              {Object.entries(MESH_PROFILES).map(([k,v])=>(<option key={k} value={k}>{v.label}</option>))}
+            </select>
+            <input
+              type="url"
+              value={prometheusUrl}
+              onChange={e=>setPrometheusUrl(e.target.value)}
+              placeholder="/prometheus veya tam URL"
+              title="Örn: https://topology.example.com/prometheus — pod içi nginx proxy"
+              style={{flex:"1 1 200px",minWidth:160,maxWidth:420,background:"#020817",border:"1px solid #1E293B",borderRadius:6,color:"#E2E8F0",fontSize:11,padding:"5px 8px",outline:"none"}}
+            />
+            {ghostBtn(meshLoading?"Trafik…":"Trafik yenile",()=>void loadMeshTraffic())}
+            {meshFetchedAt&&<span style={{fontSize:10,color:"#22D3EE"}}>RPS: {meshFetchedAt.toLocaleTimeString()}</span>}
+            {meshErr&&<span style={{fontSize:10,color:"#F87171",maxWidth:280,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={meshErr}>{meshErr}</span>}
+          </div>
         </div>
         {graphView==="table"?(
-          <div style={{flex:1,overflow:"auto",marginTop:88,padding:"8px 12px",boxSizing:"border-box"}}>
+          <div style={{flex:1,overflow:"auto",marginTop:132,padding:"8px 12px",boxSizing:"border-box"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
               <thead>
                 <tr style={{textAlign:"left",color:"#64748B",borderBottom:"1px solid #1E293B"}}>
@@ -1292,6 +1389,19 @@ export default function App() {
 
       {/* Right panel */}
       <div style={{width:rightPanelWidth,minWidth:200,maxWidth:900,background:"#0A1628",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
+
+        {hotServices.length>0&&(
+          <div style={{borderBottom:"1px solid #1E293B",flexShrink:0,padding:"8px 12px",maxHeight:140,overflowY:"auto"}}>
+            <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Yoğun servisler (gelen)</div>
+            {hotServices.map((h,i)=>(
+              <div key={`${h.ns}/${h.name}-${i}`} style={{fontSize:10,marginBottom:4,lineHeight:1.35}}>
+                <span style={{color:"#22D3EE",fontFamily:"monospace"}}>{formatShortRps(h.rps)} rps</span>
+                <span style={{color:"#94A3B8"}}> · {h.ns}/{h.name}</span>
+                {h.errPct>=1&&<span style={{color:"#F87171"}}> · {(h.errPct).toFixed(1)}% 5xx</span>}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Events */}
         <div style={{borderBottom:"1px solid #1E293B",flexShrink:0}}>
@@ -1381,6 +1491,21 @@ export default function App() {
             <span style={{background:`${KINDS[selected.kind]?.color}22`,border:`1px solid ${KINDS[selected.kind]?.color}55`,borderRadius:6,padding:"2px 10px",fontSize:11,color:KINDS[selected.kind]?.color,fontFamily:"monospace"}}>
               {KINDS[selected.kind]?.tag} {selected.kind}
             </span>
+
+            {detailNode&&(detailNode.trafficInRps!=null||detailNode.trafficOutRps!=null)&&(
+              <div style={{marginTop:10,padding:"8px 10px",background:"#042f2e",border:"1px solid #134e4a",borderRadius:8}}>
+                <div style={{fontSize:10,color:"#5eead4",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Mesh trafiği (5m rate)</div>
+                {detailNode.trafficInRps!=null&&(
+                  <div style={{fontSize:12,color:"#ccfbf1",marginBottom:4}}>
+                    ↓ Gelen: <b>{formatShortRps(detailNode.trafficInRps)}</b> rps
+                    {detailNode.trafficErrRatio>0.005&&<span style={{color:"#fca5a5"}}> · ~{(detailNode.trafficErrRatio*100).toFixed(1)}% 5xx</span>}
+                  </div>
+                )}
+                {detailNode.trafficOutRps!=null&&(
+                  <div style={{fontSize:12,color:"#ccfbf1"}}>↑ Giden: <b>{formatShortRps(detailNode.trafficOutRps)}</b> rps</div>
+                )}
+              </div>
+            )}
 
             <div style={{marginTop:12}}>
               {[[ "Ad", maskSecrets&&selected.kind==="Secret"?"••••":selected.name, "monospace"],["Namespace",selected.namespace],["Durum",selected.status],
