@@ -1,0 +1,229 @@
+openapi: 3.0.3
+info:
+  title: MCM Cluster Service API
+  version: 1.0.0
+  description: Hub-side cluster registry (multi-tenant via X-Tenant-ID).
+servers:
+  - url: http://localhost:8081
+    description: cluster-service direct
+  - url: http://localhost:8080
+    description: via api-gateway
+tags:
+  - name: clusters
+  - name: health
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      responses:
+        "200":
+          description: OK
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness (database)
+      responses:
+        "200":
+          description: OK
+        "503":
+          description: Not ready
+  /api/v1/clusters:
+    get:
+      tags: [clusters]
+      summary: List clusters
+      parameters:
+        - $ref: "#/components/parameters/TenantID"
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Paginated list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [clusters]
+      summary: Register cluster metadata
+      parameters:
+        - $ref: "#/components/parameters/TenantID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClusterRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v1/clusters/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [clusters]
+      summary: Get cluster
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [clusters]
+      summary: Partial update
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchClusterRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [clusters]
+      summary: Delete cluster record
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/clusters/{id}/heartbeat:
+    post:
+      tags: [clusters]
+      summary: Report health from agent or probe
+      parameters:
+        - $ref: "#/components/parameters/TenantID"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [registered, healthy, degraded, unknown, disconnected]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cluster"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  parameters:
+    TenantID:
+      name: X-Tenant-ID
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Cluster:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        name: { type: string }
+        display_name: { type: string }
+        api_server_url: { type: string }
+        region: { type: string }
+        provider: { type: string }
+        k8s_version: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        status:
+          type: string
+          enum: [registered, healthy, degraded, unknown, disconnected]
+        last_heartbeat:
+          type: string
+          format: date-time
+          nullable: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ClusterList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cluster"
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    CreateClusterRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        display_name: { type: string }
+        api_server_url: { type: string }
+        region: { type: string }
+        provider: { type: string }
+        k8s_version: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+    PatchClusterRequest:
+      type: object
+      properties:
+        display_name: { type: string }
+        api_server_url: { type: string }
+        region: { type: string }
+        provider: { type: string }
+        k8s_version: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        status:
+          type: string
+          enum: [registered, healthy, degraded, unknown, disconnected]

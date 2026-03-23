@@ -1,0 +1,11 @@
+clusterService:
+  image: mcm/cluster-service:dev
+  replicas: 1
+
+gateway:
+  image: mcm/api-gateway:dev
+  replicas: 1
+
+database:
+  existingSecret: mcm-database
+  secretKey: database-url

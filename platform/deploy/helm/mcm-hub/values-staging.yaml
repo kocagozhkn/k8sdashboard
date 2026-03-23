@@ -1,0 +1,5 @@
+clusterService:
+  replicas: 2
+
+gateway:
+  replicas: 2

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mcm-hub
+description: Multi-cluster management hub (cluster-service + gateway skeleton)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

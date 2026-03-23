@@ -1,116 +1,120 @@
 # K8s Topology Viewer
 
-React + Vite + D3 ile çalışan, Kubernetes kaynaklarını (Pod, Service, Deployment, Ingress, vb.) topoloji grafiği olarak gösteren hafif bir arayüz. Sağlık ipuçları, demo modu ve `kubectl` JSON yapıştırma desteği içerir.
+A lightweight UI built with React, Vite, and D3 that shows Kubernetes resources (Pod, Service, Deployment, Ingress, etc.) as a topology graph. Includes health hints, demo mode, and `kubectl` JSON paste support.
 
-## Özellikler
+## Features
 
-- **Kümede otomatik bağlantı**: Uygulama Ingress/LB üzerinden `localhost` dışı bir host’tan açıldığında, aynı origin altındaki `/k8s-api` üzerinden pod içi `kubectl proxy` ile API’ye bağlanıp listelemeyi dener.
-- **Ön tanımlı kümeler**: `cluster-presets.js` içinde sabit hedefler (ör. `same-origin`, QA için tam URL).
-- **kubeconfig**: Dosya seçme veya yapıştırma; token’lı context’lerle (CORS izin verirse) doğrudan API; aksi halde yerelde `kubectl proxy --port=8001`.
-- **Demo** ve **kubectl çıktısı yapıştırma** (`kubectl get … -o json`).
-- **Çift konteyner pod**: Nginx (statik UI + `/k8s-api` ters vekili) + `kubectl` proxy sidecar (service account ile API).
+- **In-cluster auto-connect**: When the app is opened from a non-`localhost` host (Ingress/LB), it tries to list resources via `/k8s-api` on the same origin (in-pod `kubectl proxy`).
+- **Cluster presets**: Fixed targets in `cluster-presets.js` (e.g. `same-origin`, full QA URL).
+- **kubeconfig**: File upload or paste; token-based contexts can call the API directly when CORS allows; otherwise use local `kubectl proxy --port=8001`.
+- **Demo** and **kubectl output paste** (`kubectl get … -o json`).
+- **Two-container pod**: Nginx (static UI + `/k8s-api` reverse proxy) + `kubectl` proxy sidecar (ServiceAccount API access).
 
-## Gereksinimler
+## Requirements
 
-- Node.js 20+ (yerel geliştirme)
-- Docker (imaj üretimi)
-- Kubernetes: `kubectl` ve hedef kümede uygulama için uygun imaj çekme (ör. ACR + AKS)
+- Node.js 20+ (local development)
+- Docker (image builds)
+- Kubernetes: `kubectl` and image pull rights on the target cluster (e.g. ACR + AKS)
 
-## Yerel geliştirme
+## Local development
 
 ```bash
 npm install
 npm run dev
 ```
 
-Canlı API için:
+For the live API:
 
 ```bash
 kubectl config use-context <context>
 kubectl proxy --port=8001
 ```
 
-Tarayıcıda API tabanı genelde `http://127.0.0.1:8001` olur. İsterseniz `vite.config.js` içindeki `/k8s-api` proxy’sini kullanıp URL olarak `http://localhost:5173/k8s-api` da verebilirsiniz.
+The API base in the browser is usually `http://127.0.0.1:8001`. You can also use the `/k8s-api` proxy from `vite.config.js` and set the URL to `http://localhost:5173/k8s-api`.
 
-## Üretim derlemesi ve Docker
+## Production build and Docker
 
 ```bash
 npm run build
 ```
 
-`postbuild` betiği tanımlıysa commit + `git push` çalıştırır. Sadece derleme için:
+If `postbuild` is defined, it may run commit + `git push`. Build only:
 
 ```bash
 DOCKER_BUILD=1 npm run build
 ```
 
-İmaj (Dockerfile `DOCKER_BUILD=1` ile postbuild’i atlar):
+Image (Dockerfile sets `DOCKER_BUILD=1` so postbuild is skipped):
 
 ```bash
 docker build -t <registry>/k8s-topology:latest .
 docker push <registry>/k8s-topology:latest
 ```
 
-`k8s-manifest.yaml` içindeki `image:` alanını kendi registry’nize göre güncelleyin.
+Update the `image:` field in `k8s-manifest.yaml` for your registry.
 
-## Kubernetes’e dağıtım
+## Deploy to Kubernetes
 
 ```bash
 kubectl apply -f k8s-manifest.yaml
 ```
 
-Oluşturulan kaynaklar:
+Resources created:
 
-| Kaynak | Açıklama |
-|--------|----------|
-| `Namespace/topology` | İzolasyon |
-| `ServiceAccount` + `ClusterRole` + `ClusterRoleBinding` | Salt okunur API (`get/list/watch`) |
+| Resource | Description |
+|----------|-------------|
+| `Namespace/topology` | Isolation |
+| `ServiceAccount` + `ClusterRole` + `ClusterRoleBinding` | Read-only API (`get/list/watch`) |
 | `Deployment` | Nginx + `rancher/kubectl` proxy sidecar |
-| `Service` `LoadBalancer` | Azure AKS için **iç** LB (`azure-load-balancer-internal: "true"`) |
+| `Service` `LoadBalancer` | **Internal** Azure LB (`azure-load-balancer-internal: "true"`) |
 
-**Kong kullanılmaz**; erişim internal LoadBalancer IP’si (veya buna işaret eden private DNS) ile yapılır:
+**Kong is not used**; access is via the internal LoadBalancer IP (or private DNS):
 
 ```bash
 kubectl get svc k8s-topology -n topology
 ```
 
-## Yapılandırma
+## Configuration
 
-### QA veya ek küme URL’si (Vite build zamanı)
+### QA or extra cluster URL (Vite build time)
 
-`.env` veya CI ortamında:
+In `.env` or CI:
 
 ```bash
 VITE_K8S_API_CORTEX_QA_AKS=https://<qa-host>/k8s-api
 ```
 
-Örnek: `.env.example`
+See `.env.example`.
 
-### Ön tanımlı kümeler
+### Preset clusters
 
-`cluster-presets.js` dosyasını düzenleyin: `same-origin`, boş olmayan tam `https://…/k8s-api` URL’leri veya ek satırlar.
+Edit `cluster-presets.js`: `same-origin`, non-empty full `https://…/k8s-api` URLs, or add rows.
 
-### kubeconfig (tarayıcı)
+### kubeconfig (browser)
 
-`~/.kube/config` otomatik okunmaz; dosya seçilir veya içerik yapıştırılır. İsteğe bağlı **Tarayıcıda sakla** `localStorage` kullanır.
+`~/.kube/config` is not read automatically; use file upload or paste. Optional **Save in browser** uses `localStorage`.
 
-## Mimari özeti
+## Architecture summary
 
 ```
-Tarayıcı → Service (LB) → nginx:80
-                              ├ /          → React SPA
-                              └ /k8s-api/* → 127.0.0.1:8001 (kubectl proxy) → API sunucusu
+Browser → Service (LB) → nginx:80
+                            ├ /          → React SPA
+                            └ /k8s-api/* → 127.0.0.1:8001 (kubectl proxy) → API server
 ```
 
-Proxy, pod’un service account token’ı ile kimlik doğrular; RBAC `k8s-topology-reader` ile sınırlıdır.
+The proxy authenticates with the pod’s service account; RBAC is limited by `k8s-topology-reader`.
 
-## Sorun giderme
+## Troubleshooting
 
-- **`Failed to fetch` / boş liste**: UI’yi `kubectl port-forward svc/k8s-topology 8080:80` ile açıyorsanız API tabanı **`http://127.0.0.1:8001` değil**, **`http://localhost:8080/k8s-api`** olmalı (uygulama Vite dışındaki tüm oturumlarda bunu otomatik seçer). Yalnız `npm run dev` (5173) iken laptop’ta `kubectl proxy --port=8001` kullanın.
-- **Boş graf / HTTP hataları**: Hata metnindeki kod ve gövde özeti; hard refresh (`cache: no-store` kullanılır).
-- **Exec / istemci sertifikası** ile giriş yapan context’ler tarayıcıda doğrudan kullanılamaz; `kubectl proxy` kullanın.
-- **ACR**: AKS’in imajı çekebilmesi için `az aks update --attach-acr …` veya eşdeğer `AcrPull` yetkisi gerekir.
+- **`Failed to fetch` / empty list**: If you open the UI with `kubectl port-forward svc/k8s-topology 8080:80`, the API base must be **`http://localhost:8080/k8s-api`**, not `http://127.0.0.1:8001` (outside Vite, the app picks this automatically). Use `kubectl proxy --port=8001` only with `npm run dev` (5173).
+- **Empty graph / HTTP errors**: Check the error text and body snippet; the app uses `cache: no-store`; try a hard refresh.
+- Contexts using **exec** or **client certs** cannot be used directly in the browser; use `kubectl proxy`.
+- **ACR**: AKS needs `az aks update --attach-acr …` or equivalent `AcrPull` to pull images.
 
-## Lisans
+## Multi-cluster platform (experimental)
 
-Private / proje içi kullanım (`package.json` içinde `"private": true`).
+A separate hub-style scaffold (Go services, Helm, OpenAPI) lives under **`platform/`**. See [platform/README.md](platform/README.md).
+
+## License
+
+Private / internal use (`package.json` has `"private": true`).

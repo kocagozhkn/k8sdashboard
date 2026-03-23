@@ -1,0 +1,31 @@
+# Default values — override per environment (values-dev.yaml, values-prod.yaml).
+
+global:
+  namespace: mcm-system
+
+clusterService:
+  image: mcm/cluster-service:0.1.0
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+gateway:
+  image: mcm/api-gateway:0.1.0
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# Reference an existing Secret with key database-url (postgres connection string).
+database:
+  existingSecret: mcm-database
+  secretKey: database-url

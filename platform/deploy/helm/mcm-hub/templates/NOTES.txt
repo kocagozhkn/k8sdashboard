@@ -1,0 +1,11 @@
+1. Create the database secret (example):
+   kubectl -n mcm-system create secret generic mcm-database \
+     --from-literal=database-url='postgres://user:pass@host:5432/mcm?sslmode=require'
+
+2. Install:
+   helm upgrade --install mcm-hub . -n mcm-system --create-namespace -f values-dev.yaml
+
+3. Port-forward gateway:
+   kubectl -n mcm-system port-forward svc/{{ include "mcm-hub.fullname" . }}-gateway 8080:8080
+
+4. Call API with header X-Tenant-ID (UUID).

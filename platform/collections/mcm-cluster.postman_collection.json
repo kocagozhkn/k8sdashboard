@@ -1,0 +1,47 @@
+{
+  "info": {
+    "name": "MCM Cluster Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "tenantId", "value": "00000000-0000-0000-0000-000000000001" }
+  ],
+  "item": [
+    {
+      "name": "List clusters",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "X-Tenant-ID", "value": "{{tenantId}}" }],
+        "url": "{{baseUrl}}/api/v1/clusters?limit=50&offset=0"
+      }
+    },
+    {
+      "name": "Create cluster",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-Tenant-ID", "value": "{{tenantId}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"spoke-1\",\n  \"display_name\": \"Spoke One\",\n  \"api_server_url\": \"https://kubernetes.default\",\n  \"region\": \"eu-west-1\",\n  \"provider\": \"aws\",\n  \"k8s_version\": \"1.29.0\",\n  \"labels\": {\"env\": \"dev\"}\n}"
+        },
+        "url": "{{baseUrl}}/api/v1/clusters"
+      }
+    },
+    {
+      "name": "Heartbeat",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-Tenant-ID", "value": "{{tenantId}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"status\": \"healthy\"\n}" },
+        "url": "{{baseUrl}}/api/v1/clusters/{{clusterId}}/heartbeat"
+      }
+    }
+  ]
+}
