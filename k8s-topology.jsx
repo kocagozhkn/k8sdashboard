@@ -144,7 +144,8 @@ const DEMO = {
     {id:"dep-fe",   kind:"Deployment", name:"frontend",         namespace:"production",status:"3/3"},
     {id:"dep-api",  kind:"Deployment", name:"api-server",       namespace:"production",status:"1/3"},
     {id:"sts-db",   kind:"StatefulSet",name:"postgres",         namespace:"production",status:"1/1"},
-    {id:"pod-f1",   kind:"Pod",        name:"frontend-x7k2p",   namespace:"production",status:"Running",   cpuPercent:45,memPercent:52,restarts:0},
+    {id:"pod-f1",   kind:"Pod",        name:"frontend-x7k2p",   namespace:"production",status:"Running",   cpuPercent:45,memPercent:52,restarts:0,
+      podContainers:["app"],podImageInfo:"demo/app:v2.4.1\n  digest: sha256:a1b2c3d4e5f6…",sampleLog:"2026-03-23T10:00:01.123Z [demo] GET /health 200 2ms\n2026-03-23T10:00:11.456Z [demo] GET /api/ready 200 4ms"},
     {id:"pod-f2",   kind:"Pod",        name:"frontend-m9n3q",   namespace:"production",status:"Running",   cpuPercent:38,memPercent:48,restarts:1},
     {id:"pod-f3",   kind:"Pod",        name:"frontend-p4r8s",   namespace:"production",status:"Running",   cpuPercent:92,memPercent:61,restarts:0},
     {id:"pod-a1",   kind:"Pod",        name:"api-server-a2b3",  namespace:"production",status:"CrashLoopBackOff",cpuPercent:12,memPercent:18,restarts:14},
@@ -289,6 +290,52 @@ function itemKindFromListKind(listKind) {
   return KINDS[base] ? base : "";
 }
 
+/** İlk yüklemede `default` namespace varsa onu seç; yoksa tümü */
+function pickInitialNamespace(nodes) {
+  if (!nodes?.length) return "all";
+  return nodes.some(n => n.namespace === "default") ? "default" : "all";
+}
+
+function podContainerNamesFromSpec(item) {
+  if (item.kind !== "Pod") return undefined;
+  const names = (item.spec?.containers || []).map(c => c.name).filter(Boolean);
+  return names.length ? names : undefined;
+}
+
+/** Görüntü referansı + kısa imaj digest (containerStatuses.imageID) */
+function podImageInfoFromItem(item) {
+  if (item.kind !== "Pod") return undefined;
+  const statuses = item.status?.containerStatuses || [];
+  const lines = [];
+  const add = (c, prefix) => {
+    const st = statuses.find(s => s.name === c.name);
+    const ref = (c.image || "").trim() || "?";
+    let digestShort = "";
+    const id = st?.imageID || "";
+    if (id.includes("@sha256:")) digestShort = (id.split("@sha256:")[1] || "").slice(0, 12);
+    else if (id.startsWith("sha256:")) digestShort = id.slice(7, 19);
+    const head = prefix ? `${prefix}${c.name}: ` : `${c.name}: `;
+    lines.push(digestShort ? `${head}${ref}\n  digest: sha256:${digestShort}…` : `${head}${ref}`);
+  };
+  for (const c of item.spec?.containers || []) add(c, "");
+  for (const c of item.spec?.initContainers || []) add(c, "[init] ");
+  return lines.length ? lines.join("\n\n") : undefined;
+}
+
+async function fetchPodLogTail(apiBaseRaw, hdr, namespace, podName, container, tailLines = 400) {
+  const base = normalizeKubernetesListBase((apiBaseRaw || "").replace(/\/$/, ""), hdr || {});
+  let path = `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}/log?tailLines=${tailLines}&timestamps=true`;
+  if (container) path += `&container=${encodeURIComponent(container)}`;
+  const url = kubernetesListFetchUrl(base, path);
+  const r = await fetch(url, { headers: { ...hdr }, credentials: "omit", cache: "no-store" });
+  if (!r.ok) {
+    let t = "";
+    try { t = await r.text(); } catch { /* */ }
+    throw new Error(t?.slice(0, 280) || `HTTP ${r.status}`);
+  }
+  return r.text();
+}
+
 function parseKubectl(jsonStr) {
   const data=JSON.parse(jsonStr), items=data.items||(data.kind!=="List"?[data]:[]);
   const fallbackKind=itemKindFromListKind(data.kind);
@@ -310,6 +357,8 @@ function parseKubectl(jsonStr) {
       restarts:getRestarts(full),
       cpuPercent:item._cpuPercent,
       metricsCpuMilli:item._metricsCpuMilli,
+      podContainers:k==="Pod"?podContainerNamesFromSpec(full):undefined,
+      podImageInfo:k==="Pod"?podImageInfoFromItem(full):undefined,
     });
     rawItems.push({...full,_id:id});
   }
@@ -527,7 +576,7 @@ export default function App() {
   const [screen,setScreen]=useState("home");
   const [graphData,setGraphData]=useState(null);
   const [selected,setSelected]=useState(null);
-  const [nsFilter,setNsFilter]=useState("all");
+  const [nsFilter,setNsFilter]=useState("default");
   const [typeFilters,setTypeFilters]=useState(new Set(Object.keys(KINDS)));
   const [nameFilter,setNameFilter]=useState("");
   const [healthFilter,setHealthFilter]=useState("all");
@@ -555,6 +604,11 @@ export default function App() {
   const [maskSecrets,setMaskSecrets]=useState(false);
   const [snapshotBaseline,setSnapshotBaseline]=useState(null);
   const [diffSummary,setDiffSummary]=useState(null);
+  const [podLogText,setPodLogText]=useState("");
+  const [podLogLoading,setPodLogLoading]=useState(false);
+  const [podLogErr,setPodLogErr]=useState("");
+  const [podLogContainer,setPodLogContainer]=useState("");
+  const [podLogTick,setPodLogTick]=useState(0);
   const autoConnectDoneRef=useRef(false);
   const fetchAPIRef=useRef(async()=>{});
   const fileInputRef=useRef(null);
@@ -606,6 +660,55 @@ export default function App() {
   useGraph(svgRef,graphView==="graph"?filtered.nodes:[],graphView==="graph"?filtered.edges:[],issues,selected?.id,(n)=>setSelected(n),{namespaceLanes,maskSecrets});
 
   const namespaces=useMemo(()=>[...new Set((graphData?.nodes||[]).map(n=>n.namespace))].sort(),[graphData]);
+  const nsSelectValue=useMemo(()=>{
+    if(nsFilter==="all") return "all";
+    if(namespaces.includes(nsFilter)) return nsFilter;
+    return "all";
+  },[nsFilter,namespaces]);
+
+  useEffect(()=>{
+    if(!graphData?.nodes?.length) return;
+    if(nsFilter!=="all"&&!namespaces.includes(nsFilter)){
+      setNsFilter(pickInitialNamespace(graphData.nodes));
+    }
+  },[graphData,namespaces,nsFilter]);
+
+  useEffect(()=>{
+    if(!selected||selected.kind!=="Pod"){setPodLogContainer("");return;}
+    const pc=selected.podContainers;
+    setPodLogContainer(pc?.[0]||"");
+  },[selected?.id,selected?.kind]);
+
+  useEffect(()=>{
+    if(screen!=="graph"||!selected||selected.kind!=="Pod"){
+      setPodLogText("");
+      setPodLogErr("");
+      setPodLogLoading(false);
+      return;
+    }
+    if(selected.sampleLog){
+      setPodLogText(selected.sampleLog);
+      setPodLogErr("");
+      setPodLogLoading(false);
+      return;
+    }
+    let cancelled=false;
+    const run=async()=>{
+      setPodLogLoading(true);
+      setPodLogErr("");
+      try{
+        const cont=podLogContainer||selected.podContainers?.[0]||"";
+        const txt=await fetchPodLogTail(apiUrl,apiFetchHeaders,selected.namespace,selected.name,cont);
+        if(!cancelled) setPodLogText(txt);
+      }catch(e){
+        if(!cancelled) setPodLogErr(e.message||String(e));
+      }finally{
+        if(!cancelled) setPodLogLoading(false);
+      }
+    };
+    run();
+    return ()=>{cancelled=true;};
+  },[screen,selected?.id,selected?.kind,podLogContainer,apiUrl,apiFetchHeaders,podLogTick]);
   const kindCounts=useMemo(()=>{
     const c={};
     if(!graphData) return c;
@@ -621,8 +724,8 @@ export default function App() {
     return c;
   },[graphData,nsFilter,nameFilter]);
 
-  const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter("all");setScreen("graph");};
-  const applyInput=()=>{setErr("");try{setGraphData(parseKubectl(rawInput));setSelected(null);setNsFilter("all");setScreen("graph");}catch(e){setErr("JSON hatası: "+e.message);}};
+  const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter(pickInitialNamespace(DEMO.nodes));setScreen("graph");};
+  const applyInput=()=>{setErr("");try{const p=parseKubectl(rawInput);setGraphData(p);setSelected(null);setNsFilter(pickInitialNamespace(p.nodes));setScreen("graph");}catch(e){setErr("JSON hatası: "+e.message);}};
   const fetchAPI=useCallback(async(apiBaseOverride,opts={})=>{
     setLoading(true);setErr("");
     const results=[];
@@ -694,9 +797,10 @@ export default function App() {
     }
     setFetchWarnings(failures.length?failures:[]);
     try{
-      setGraphData(parseKubectl(JSON.stringify({kind:"List",items:results})));
+      const parsed=parseKubectl(JSON.stringify({kind:"List",items:results}));
+      setGraphData(parsed);
       setSelected(null);
-      setNsFilter("all");
+      setNsFilter(pickInitialNamespace(parsed.nodes));
       setScreen("graph");
       setLastRefreshAt(new Date());
     }catch(e){setErr(e.message);}
@@ -1005,7 +1109,7 @@ export default function App() {
           <label htmlFor="ns-filter-select" style={{display:"block",fontSize:10,color:"#475569",marginBottom:6,textTransform:"uppercase",letterSpacing:1}}>Namespace</label>
           <select
             id="ns-filter-select"
-            value={nsFilter}
+            value={nsSelectValue}
             onChange={e=>setNsFilter(e.target.value)}
             style={{
               width:"100%",
@@ -1234,6 +1338,32 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            {selected.kind==="Pod"&&selected.podImageInfo&&(
+              <div style={{marginTop:10,marginBottom:4}}>
+                <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Container imajları</div>
+                <div style={{fontSize:11,fontFamily:"ui-monospace,monospace",color:"#CBD5E1",whiteSpace:"pre-wrap",wordBreak:"break-all",lineHeight:1.45}}>{selected.podImageInfo}</div>
+              </div>
+            )}
+            {selected.kind==="Pod"&&(
+              <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid #1E293B"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:8}}>
+                  <div style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1}}>Pod logları</div>
+                  <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                    {selected.podContainers?.length>1&&(
+                      <select value={podLogContainer} onChange={e=>setPodLogContainer(e.target.value)} style={{background:"#020817",border:"1px solid #1E293B",borderRadius:6,color:"#E2E8F0",fontSize:11,padding:"4px 8px",cursor:"pointer"}}>
+                        {selected.podContainers.map(nm=>(<option key={nm} value={nm}>{nm}</option>))}
+                      </select>
+                    )}
+                    <button type="button" onClick={()=>setPodLogTick(t=>t+1)} style={{background:"#1E3A5F",border:"1px solid #3B82F6",color:"#93C5FD",borderRadius:6,padding:"4px 10px",fontSize:10,cursor:"pointer"}}>Yenile</button>
+                  </div>
+                </div>
+                {podLogLoading&&<div style={{fontSize:11,color:"#64748B"}}>Yükleniyor…</div>}
+                {podLogErr&&!podLogLoading&&<div style={{fontSize:11,color:"#F87171",wordBreak:"break-word"}}>{podLogErr}</div>}
+                {!podLogLoading&&podLogText&&<pre style={{margin:0,maxHeight:240,overflow:"auto",fontSize:10,lineHeight:1.35,background:"#020817",border:"1px solid #1E293B",borderRadius:8,padding:10,color:"#E2E8F0",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{podLogText}</pre>}
+                {!podLogLoading&&!podLogErr&&!podLogText&&selected.sampleLog===undefined&&<div style={{fontSize:11,color:"#64748B"}}>Log boş veya henüz yüklenmedi.</div>}
+              </div>
+            )}
 
             {/* Node issues */}
             {issues.filter(i=>i.id===selected.id).length>0&&(
