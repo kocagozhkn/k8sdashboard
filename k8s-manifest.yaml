@@ -26,6 +26,7 @@ rules:
       - configmaps
       - secrets
       - persistentvolumeclaims
+      - events
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources:
@@ -37,6 +38,19 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources:
       - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
     verbs: ["get", "list", "watch"]
   - apiGroups: ["batch"]
     resources:

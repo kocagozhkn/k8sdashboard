@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import * as d3 from "d3";
 import { CLUSTER_PRESETS, resolvePresetApiBase } from "./cluster-presets.js";
 import {
@@ -71,9 +71,13 @@ const KINDS = {
   PersistentVolumeClaim: { color: "#14B8A6", tag: "PVC" },
   Job:                   { color: "#8B5CF6", tag: "JOB" },
   CronJob:               { color: "#EC4899", tag: "CJ"  },
+  HorizontalPodAutoscaler:{ color: "#06B6D4", tag: "HPA" },
+  PodDisruptionBudget:   { color: "#F43F5E", tag: "PDB" },
+  NetworkPolicy:         { color: "#84CC16", tag: "NP"  },
 };
 
-const EDGE_COLORS = { routes:"#A855F7", selects:"#22C55E", owns:"#3B82F6", uses:"#EAB308", calls:"#F97316" };
+const EDGE_COLORS = { routes:"#A855F7", selects:"#22C55E", owns:"#3B82F6", uses:"#EAB308", calls:"#F97316", scales:"#06B6D4", disrupts:"#F43F5E", policies:"#84CC16" };
+const EDGE_LEGEND_TR = { routes:"Ingress→Svc", selects:"Service→Pod", owns:"Controller→Pod", uses:"Volume/Env", calls:"App çağrısı", scales:"HPA ölçekleme", disrupts:"PDB koruma", policies:"NetworkPolicy→Pod" };
 const HEALTH_COLORS = { critical:"#EF4444", warning:"#F59E0B", info:"#60A5FA", ok:"#22C55E" };
 const NW = 172, NH = 66;
 
@@ -207,6 +211,15 @@ function getStatus(item) {
     return `${item.status?.readyReplicas??0}/${item.spec?.replicas??1}`;
   }
   if (item.kind==="PersistentVolumeClaim") return item.status?.phase||"Unknown";
+  if (item.kind==="HorizontalPodAutoscaler") {
+    const cur=item.status?.currentReplicas??0, des=item.status?.desiredReplicas??0, mx=item.spec?.maxReplicas??"?";
+    return `${cur}/${des} (max ${mx})`;
+  }
+  if (item.kind==="PodDisruptionBudget") {
+    const d=item.status?.currentHealthy??0, e=item.status?.expectedPods??"?";
+    return `healthy ${d}/${e}`;
+  }
+  if (item.kind==="NetworkPolicy") return item.spec?.policyTypes?.join(",")||"Active";
   return "Active";
 }
 function getRestarts(item) {
@@ -243,6 +256,30 @@ function buildEdges(nodes, rawItems) {
         if (ef.secretRef){const t=mkId("secret",ns,ef.secretRef.name);if(ids.has(t))edges.push({id:`e${eid++}`,source:src,target:t,type:"uses"});}
       }
     }
+    if (kind==="HorizontalPodAutoscaler") {
+      const ref=item.spec?.scaleTargetRef;
+      if (ref?.kind&&ref?.name) {
+        const t=mkId(ref.kind,ns,ref.name);
+        if (ids.has(t)) edges.push({id:`e${eid++}`,source:src,target:t,type:"scales"});
+      }
+    }
+    if (kind==="PodDisruptionBudget") {
+      const ml=item.spec?.selector?.matchLabels;
+      if (ml&&Object.keys(ml).length) {
+        for (const n of nodes) {
+          if (!["Deployment","StatefulSet","ReplicaSet"].includes(n.kind)||n.namespace!==ns) continue;
+          const tl=Object.keys(n.templateLabels||{}).length?n.templateLabels:n.labels;
+          if (Object.keys(ml).every(k=>tl?.[k]===ml[k])) edges.push({id:`e${eid++}`,source:src,target:n.id,type:"disrupts"});
+        }
+      }
+    }
+    if (kind==="NetworkPolicy") {
+      const sel=item.spec?.podSelector?.matchLabels||{};
+      const keys=Object.keys(sel);
+      if (keys.length) nodes.filter(n=>n.kind==="Pod"&&n.namespace===ns).forEach(pod=>{
+        if (keys.every(k=>pod.labels?.[k]===sel[k])) edges.push({id:`e${eid++}`,source:src,target:pod.id,type:"policies"});
+      });
+    }
   }
   const seen=new Set(); return edges.filter(e=>{const k=`${e.source}→${e.target}`;if(seen.has(k))return false;seen.add(k);return true;});
 }
@@ -262,14 +299,91 @@ function parseKubectl(jsonStr) {
     const full={...item,kind:k};
     const ns=item.metadata?.namespace||"default";
     const id=`${k.toLowerCase()}-${ns}-${item.metadata.name}`;
-    nodes.push({id,kind:k,name:item.metadata.name,namespace:ns,labels:item.metadata.labels||{},status:getStatus(full),restarts:getRestarts(full)});
+    const tplLabels=["Deployment","StatefulSet","ReplicaSet","DaemonSet"].includes(k)
+      ? (item.spec?.template?.metadata?.labels||{})
+      : {};
+    nodes.push({
+      id,kind:k,name:item.metadata.name,namespace:ns,
+      labels:item.metadata.labels||{},
+      templateLabels:tplLabels,
+      status:getStatus(full),
+      restarts:getRestarts(full),
+      cpuPercent:item._cpuPercent,
+      metricsCpuMilli:item._metricsCpuMilli,
+    });
     rawItems.push({...full,_id:id});
   }
   return {nodes,edges:buildEdges(nodes,rawItems)};
 }
 
+function mergePodMetricsFromApi(items, metricsDoc) {
+  if (!metricsDoc?.items?.length) return;
+  const usageNano = new Map();
+  for (const it of metricsDoc.items) {
+    const ns = it.metadata?.namespace, nm = it.metadata?.name;
+    if (!ns || !nm) continue;
+    let nano = 0;
+    for (const c of it.containers || []) {
+      const cpu = c.usage?.cpu || "0";
+      if (typeof cpu === "string") {
+        if (cpu.endsWith("n")) nano += parseInt(cpu, 10) || 0;
+        else if (cpu.endsWith("u")) nano += (parseFloat(cpu) || 0) * 1e3;
+        else if (cpu.endsWith("m")) nano += (parseFloat(cpu) || 0) * 1e6;
+        else nano += (parseFloat(cpu) || 0) * 1e9;
+      }
+    }
+    usageNano.set(`${ns}/${nm}`, nano);
+  }
+  for (const item of items) {
+    if (item.kind !== "Pod") continue;
+    const ns = item.metadata?.namespace, nm = item.metadata?.name;
+    const nano = usageNano.get(`${ns}/${nm}`);
+    if (nano == null) continue;
+    let limNano = 0;
+    let hasLim = true;
+    for (const c of item.spec?.containers || []) {
+      const lim = c.resources?.limits?.cpu;
+      if (!lim) { hasLim = false; break; }
+      if (typeof lim === "string") {
+        if (lim.endsWith("m")) limNano += (parseFloat(lim) || 0) * 1e6;
+        else limNano += (parseFloat(lim) || 0) * 1e9;
+      }
+    }
+    if (hasLim && limNano > 0) item._cpuPercent = Math.min(100, Math.round((nano / limNano) * 100));
+    else item._metricsCpuMilli = Math.round(nano / 1e6);
+  }
+}
+
+async function fetchClusterEvents(base, hdr) {
+  try {
+    const url = kubernetesListFetchUrl(base, "/api/v1/events?limit=250");
+    const r = await fetch(url, { headers: hdr, cache: "no-store", credentials: "omit" });
+    if (!r.ok) return [];
+    const d = await r.json();
+    return (d.items || []).map((it, i) => ({
+      id: it.metadata?.uid || `ev-${i}-${it.metadata?.name || ""}`,
+      ns: it.metadata?.namespace || "",
+      last: String(it.lastTimestamp || it.eventTime || ""),
+      type: it.type || "",
+      reason: it.reason || "",
+      msg: (it.message || "").slice(0, 240),
+      obj: `${it.involvedObject?.kind || ""}/${it.involvedObject?.name || ""}`,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+const KUBECTL_PLURAL = {
+  Pod: "pods", Service: "services", Deployment: "deployments", StatefulSet: "statefulsets", DaemonSet: "daemonsets",
+  ReplicaSet: "replicasets", Ingress: "ingresses", ConfigMap: "configmaps", Secret: "secrets",
+  PersistentVolumeClaim: "persistentvolumeclaims", Job: "jobs", CronJob: "cronjobs",
+  HorizontalPodAutoscaler: "horizontalpodautoscalers", PodDisruptionBudget: "poddisruptionbudgets", NetworkPolicy: "networkpolicies",
+};
+
 // ── D3 hook ──────────────────────────────────────────────────────────────────
-function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect) {
+function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opts = {}) {
+  const { namespaceLanes = false, maskSecrets = false } = opts;
   useEffect(()=>{
     if (!svgRef.current||!nodes?.length) return;
     const el=svgRef.current, W=el.clientWidth||900, H=el.clientHeight||650;
@@ -290,14 +404,23 @@ function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect) {
 
     const sN=nodes.map(n=>({...n})), nMap=new Map(sN.map(n=>[n.id,n]));
     const sE=edges.filter(e=>nMap.has(e.source)&&nMap.has(e.target)).map(e=>({...e}));
+    const showName=d=>(maskSecrets&&d.kind==="Secret"?"••••":d.name);
 
     const sim=d3.forceSimulation(sN)
-      .force("link",d3.forceLink(sE).id(d=>d.id).distance(230).strength(0.4))
+      .force("link",d3.forceLink(sE).id(d=>d.id).distance(namespaceLanes?200:230).strength(0.4))
       .force("charge",d3.forceManyBody().strength(-850))
-      .force("center",d3.forceCenter(W/2,H/2))
-      .force("collide",d3.forceCollide(105))
-      .force("x",d3.forceX(W/2).strength(0.04))
-      .force("y",d3.forceY(H/2).strength(0.04));
+      .force("collide",d3.forceCollide(105));
+    if(namespaceLanes&&sN.length){
+      const nss=[...new Set(sN.map(n=>n.namespace))].sort();
+      const nlen=Math.max(nss.length,1);
+      sim.force("center",d3.forceCenter(W/2,H/2).strength(0.02))
+        .force("x",d3.forceX(W/2).strength(0.06))
+        .force("y",d3.forceY(d=>{const i=Math.max(0,nss.indexOf(d.namespace));return((i+0.5)/nlen)*H;}).strength(0.26));
+    }else{
+      sim.force("center",d3.forceCenter(W/2,H/2))
+        .force("x",d3.forceX(W/2).strength(0.04))
+        .force("y",d3.forceY(H/2).strength(0.04));
+    }
 
     const linkG=g.append("g");
     const link=linkG.selectAll("line").data(sE).join("line")
@@ -351,7 +474,7 @@ function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect) {
     // Name
     node.append("text").attr("y",5).attr("text-anchor","middle")
       .attr("fill","#E2E8F0").attr("font-size","12px").attr("font-weight","600")
-      .text(d=>d.name.length>21?d.name.slice(0,20)+"…":d.name);
+      .text(d=>{const n=showName(d);return n.length>21?n.slice(0,20)+"…":n;});
 
     // Status + metrics
     node.append("text").attr("y",NH/2-8).attr("text-anchor","middle")
@@ -365,6 +488,7 @@ function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect) {
         const s=d.status||"",sl=s.length>14?s.slice(0,13)+"…":s;
         const parts=[sl];
         if(d.cpuPercent!=null) parts.push(`CPU:${d.cpuPercent}%`);
+        else if(d.metricsCpuMilli!=null) parts.push(`CPU:${d.metricsCpuMilli}m`);
         if(d.memPercent!=null) parts.push(`MEM:${d.memPercent}%`);
         return parts.join("  ");
       });
@@ -395,7 +519,7 @@ function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect) {
         d3.zoomIdentity.translate(W/2-sc*(b.x+b.width/2),H/2-sc*(b.y+b.height/2)).scale(sc));
     });
     return ()=>sim.stop();
-  },[nodes,edges,issues,selectedId]);
+  },[nodes,edges,issues,selectedId,namespaceLanes,maskSecrets]);
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -421,7 +545,18 @@ export default function App() {
   const [kubeContexts,setKubeContexts]=useState([]);
   const [apiFetchHeaders,setApiFetchHeaders]=useState({});
   const [inClusterBootstrap,setInClusterBootstrap]=useState(isUiServedViaTopologyPod);
+  const [fetchWarnings,setFetchWarnings]=useState([]);
+  const [clusterEvents,setClusterEvents]=useState([]);
+  const [eventsOpen,setEventsOpen]=useState(false);
+  const [lastRefreshAt,setLastRefreshAt]=useState(null);
+  const [refreshIntervalSec,setRefreshIntervalSec]=useState(0);
+  const [graphView,setGraphView]=useState("graph");
+  const [namespaceLanes,setNamespaceLanes]=useState(false);
+  const [maskSecrets,setMaskSecrets]=useState(false);
+  const [snapshotBaseline,setSnapshotBaseline]=useState(null);
+  const [diffSummary,setDiffSummary]=useState(null);
   const autoConnectDoneRef=useRef(false);
+  const fetchAPIRef=useRef(async()=>{});
   const fileInputRef=useRef(null);
   const svgRef=useRef(null);
 
@@ -468,7 +603,7 @@ export default function App() {
   const warnCount=issues.filter(i=>i.level==="warning").length;
   const infoCount=issues.filter(i=>i.level==="info").length;
 
-  useGraph(svgRef,filtered.nodes,filtered.edges,issues,selected?.id,(n)=>setSelected(n));
+  useGraph(svgRef,graphView==="graph"?filtered.nodes:[],graphView==="graph"?filtered.edges:[],issues,selected?.id,(n)=>setSelected(n),{namespaceLanes,maskSecrets});
 
   const namespaces=useMemo(()=>[...new Set((graphData?.nodes||[]).map(n=>n.namespace))].sort(),[graphData]);
   const kindCounts=useMemo(()=>{
@@ -488,21 +623,17 @@ export default function App() {
 
   const loadDemo=()=>{setErr("");setGraphData(DEMO);setSelected(null);setNsFilter("all");setScreen("graph");};
   const applyInput=()=>{setErr("");try{setGraphData(parseKubectl(rawInput));setSelected(null);setNsFilter("all");setScreen("graph");}catch(e){setErr("JSON hatası: "+e.message);}};
-  const fetchAPI=async(apiBaseOverride,opts={})=>{
-    setLoading(true);setErr("");const results=[];
+  const fetchAPI=useCallback(async(apiBaseOverride,opts={})=>{
+    setLoading(true);setErr("");
+    const results=[];
     const hdr={...apiFetchHeaders,...(opts.headers||{})};
     const failures=[];
     const baseRaw=(apiBaseOverride??apiUrl).replace(/\/$/,"");
     const base=normalizeKubernetesListBase(baseRaw,hdr);
-    /* K8s list JSON’unda çoğu item’da kind yok; parseKubectl KINDS[item.kind] ile süzüyordu → boş graf */
     const collect=async(pathSuffix,kindName)=>{
       const url=kubernetesListFetchUrl(base,pathSuffix);
       try{
-        const r=await fetch(url,{
-          headers:hdr,
-          cache:"no-store",
-          credentials:"omit",
-        });
+        const r=await fetch(url,{headers:hdr,cache:"no-store",credentials:"omit"});
         if(!r.ok){
           let detail="";
           try{const t=await r.text();if(t)detail=t.slice(0,180);}catch{/* */}
@@ -536,7 +667,24 @@ export default function App() {
       collect("/apis/batch/v1/jobs","Job"),
       collect("/apis/batch/v1/cronjobs","CronJob"),
     ]);
+    await Promise.all([
+      collect("/apis/autoscaling/v2/horizontalpodautoscalers","HorizontalPodAutoscaler"),
+      collect("/apis/policy/v1/poddisruptionbudgets","PodDisruptionBudget"),
+      collect("/apis/networking.k8s.io/v1/networkpolicies","NetworkPolicy"),
+    ]);
+    try{
+      const mUrl=kubernetesListFetchUrl(base,"/apis/metrics.k8s.io/v1/pods");
+      const mr=await fetch(mUrl,{headers:hdr,cache:"no-store",credentials:"omit"});
+      if(mr.ok){
+        const md=await mr.json();
+        mergePodMetricsFromApi(results,md);
+      }
+    }catch{/* metrics-server yok */}
+    let ev=[];
+    try{ev=await fetchClusterEvents(base,hdr);}catch{ev=[];}
+    setClusterEvents(ev);
     if(!results.length){
+      setFetchWarnings([]);
       const corsHint=hdr.Authorization?" Doğrudan token ile çağrıda CORS engeli olabilir; kubectl proxy --port=8001 deneyin.":"";
       const pfHint=!isLocalViteDev()&&typeof window!=="undefined"&&(window.location.hostname==="localhost"||window.location.hostname==="127.0.0.1")?" Port-forward kullanıyorsanız adresin http://localhost:PORT şeklinde olduğundan ve API’nin aynı PORT üzerinden /k8s-api ile geldiğinden emin olun (127.0.0.1:8001 laptop’taki kubectl proxy içindir).":"";
       const failTail=failures.length?` Detay: ${failures.slice(0,3).join(" · ")}${failures.length>3?" …":""}`:"";
@@ -544,9 +692,24 @@ export default function App() {
       setLoading(false);
       return;
     }
-    try{setGraphData(parseKubectl(JSON.stringify({kind:"List",items:results})));setSelected(null);setNsFilter("all");setScreen("graph");}catch(e){setErr(e.message);}
+    setFetchWarnings(failures.length?failures:[]);
+    try{
+      setGraphData(parseKubectl(JSON.stringify({kind:"List",items:results})));
+      setSelected(null);
+      setNsFilter("all");
+      setScreen("graph");
+      setLastRefreshAt(new Date());
+    }catch(e){setErr(e.message);}
     setLoading(false);
-  };
+  },[apiUrl,apiFetchHeaders]);
+
+  fetchAPIRef.current=fetchAPI;
+
+  useEffect(()=>{
+    if(screen!=="graph"||refreshIntervalSec<=0)return undefined;
+    const id=setInterval(()=>{fetchAPIRef.current();},refreshIntervalSec*1000);
+    return ()=>clearInterval(id);
+  },[screen,refreshIntervalSec]);
 
   useEffect(()=>{
     if(!isUiServedViaTopologyPod()){
@@ -567,10 +730,27 @@ export default function App() {
         setInClusterBootstrap(false);
       }
     })();
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnızca mount; fetchAPI bilinçli sabit
-  },[]);
+  },[fetchAPI]);
 
   const toggleKind=k=>setTypeFilters(prev=>{const s=new Set(prev);s.has(k)?s.delete(k):s.add(k);return s;});
+  const selectAllKinds=()=>setTypeFilters(new Set(Object.keys(KINDS)));
+  const clearAllKinds=()=>setTypeFilters(new Set());
+
+  const exportTopologySvg=()=>{
+    const el=svgRef.current;
+    if(!el)return;
+    const ser=new XMLSerializer().serializeToString(el);
+    const blob=new Blob([ser],{type:"image/svg+xml;charset=utf-8"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download=`k8s-topology-${new Date().toISOString().slice(0,19).replace(/:/g,"")}.svg`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const copyText=async(t)=>{
+    try{await navigator.clipboard.writeText(t);}catch{/* */}
+  };
 
   const btn=(label,action,bg,fg="#fff")=>(
     <button onClick={action} style={{background:bg,border:"none",color:fg,borderRadius:8,padding:"9px 20px",cursor:"pointer",fontWeight:600,fontSize:13}}>{label}</button>
@@ -822,17 +1002,40 @@ export default function App() {
         </div>
         {/* NS */}
         <div style={{padding:"8px 14px",borderBottom:"1px solid #1E293B"}}>
-          <div style={{fontSize:10,color:"#475569",marginBottom:5,textTransform:"uppercase",letterSpacing:1}}>Namespace</div>
-          {["all",...namespaces].map(ns=>(
-            <div key={ns} onClick={()=>setNsFilter(ns)}
-              style={{padding:"4px 8px",borderRadius:6,marginBottom:2,cursor:"pointer",fontSize:12,background:nsFilter===ns?"#1E3A5F":"transparent",color:nsFilter===ns?"#60A5FA":"#94A3B8"}}>
-              {ns==="all"?"🌐 Tümü":`📁 ${ns}`}
-            </div>
-          ))}
+          <label htmlFor="ns-filter-select" style={{display:"block",fontSize:10,color:"#475569",marginBottom:6,textTransform:"uppercase",letterSpacing:1}}>Namespace</label>
+          <select
+            id="ns-filter-select"
+            value={nsFilter}
+            onChange={e=>setNsFilter(e.target.value)}
+            style={{
+              width:"100%",
+              boxSizing:"border-box",
+              background:"#020817",
+              border:"1px solid #1E293B",
+              borderRadius:6,
+              color:"#E2E8F0",
+              fontSize:12,
+              padding:"6px 8px",
+              outline:"none",
+              cursor:"pointer",
+              appearance:"auto",
+            }}
+          >
+            <option value="all">Tüm namespace’ler</option>
+            {namespaces.map(ns=>(
+              <option key={ns} value={ns}>{ns}</option>
+            ))}
+          </select>
         </div>
         {/* Kinds */}
         <div style={{padding:"8px 14px",flex:1,overflowY:"auto"}}>
-          <div style={{fontSize:10,color:"#475569",marginBottom:5,textTransform:"uppercase",letterSpacing:1}}>Türler</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,marginBottom:6}}>
+            <span style={{fontSize:10,color:"#475569",textTransform:"uppercase",letterSpacing:1}}>Türler</span>
+            <div style={{display:"flex",gap:4}}>
+              <button type="button" onClick={selectAllKinds} style={{background:"#0F172A",border:"1px solid #334155",color:"#94A3B8",borderRadius:4,padding:"2px 6px",fontSize:9,cursor:"pointer"}}>Tümü</button>
+              <button type="button" onClick={clearAllKinds} style={{background:"#0F172A",border:"1px solid #334155",color:"#94A3B8",borderRadius:4,padding:"2px 6px",fontSize:9,cursor:"pointer"}}>Temizle</button>
+            </div>
+          </div>
           {Object.entries(KINDS).map(([k,v])=>(
             <div key={k} onClick={()=>toggleKind(k)} style={{display:"flex",alignItems:"center",gap:7,padding:"3px 6px",borderRadius:6,cursor:"pointer",marginBottom:2,opacity:typeFilters.has(k)?1:0.28}}>
               <div style={{width:9,height:9,borderRadius:2,background:v.color,flexShrink:0}}/>
@@ -846,29 +1049,116 @@ export default function App() {
           {Object.entries(EDGE_COLORS).map(([t,c])=>(
             <div key={t} style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
               <div style={{width:18,height:2,background:c,borderRadius:1}}/>
-              <span style={{fontSize:10,color:"#64748B"}}>{t}</span>
+              <span style={{fontSize:10,color:"#64748B"}}>{EDGE_LEGEND_TR[t]||t}</span>
             </div>
           ))}
         </div>
       </div>
 
       {/* Canvas */}
-      <div style={{flex:1,position:"relative",overflow:"hidden"}}>
-        <div style={{position:"absolute",top:12,left:12,zIndex:10,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          {ghostBtn("← Menü",()=>{setScreen("home");setSelected(null);})}
-          {ghostBtn("📋 Yeni",()=>setScreen("input"))}
-          {critCount>0&&<div style={{background:"#7F1D1D",border:"1px solid #EF4444",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#FCA5A5",fontWeight:700}}>🔴 {critCount} kritik hata</div>}
-          {warnCount>0&&<div style={{background:"#451A03",border:"1px solid #F59E0B",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#FCD34D",fontWeight:700}}>🟡 {warnCount} uyarı</div>}
-          {infoCount>0&&<div style={{background:"#0C1A3A",border:"1px solid #60A5FA",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#93C5FD",fontWeight:700}}>🔵 {infoCount} bilgi</div>}
+      <div style={{flex:1,position:"relative",overflow:"hidden",display:"flex",flexDirection:"column"}}>
+        {fetchWarnings.length>0&&(
+          <div style={{flexShrink:0,background:"#422006",borderBottom:"1px solid #D97706",color:"#FDE68A",fontSize:11,padding:"6px 12px",lineHeight:1.4}}>
+            <b>Kısmi API uyarısı</b> — {fetchWarnings.length} istek başarısız; grafik mevcut verilerle gösteriliyor. {fetchWarnings.slice(0,2).join(" · ")}{fetchWarnings.length>2?" …":""}
+          </div>
+        )}
+        <div style={{position:"absolute",top:fetchWarnings.length?44:12,left:12,right:12,zIndex:10,display:"flex",flexDirection:"column",gap:6}}>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+            {ghostBtn("← Menü",()=>{setScreen("home");setSelected(null);})}
+            {ghostBtn("📋 Yeni",()=>setScreen("input"))}
+            {ghostBtn(loading?"…":"Yenile",()=>fetchAPI())}
+            <select value={String(refreshIntervalSec)} onChange={e=>setRefreshIntervalSec(Number(e.target.value))} style={{background:"#0F172A",border:"1px solid #1E293B",borderRadius:6,color:"#94A3B8",fontSize:11,padding:"4px 8px",cursor:"pointer"}}>
+              <option value="0">Otomatik kapalı</option>
+              <option value="30">30 sn</option>
+              <option value="60">1 dk</option>
+              <option value="120">2 dk</option>
+            </select>
+            {lastRefreshAt&&<span style={{fontSize:10,color:"#475569"}}>Son: {lastRefreshAt.toLocaleTimeString()}</span>}
+            {critCount>0&&<div style={{background:"#7F1D1D",border:"1px solid #EF4444",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#FCA5A5",fontWeight:700}}>🔴 {critCount}</div>}
+            {warnCount>0&&<div style={{background:"#451A03",border:"1px solid #F59E0B",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#FCD34D",fontWeight:700}}>🟡 {warnCount}</div>}
+            {infoCount>0&&<div style={{background:"#0C1A3A",border:"1px solid #60A5FA",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#93C5FD",fontWeight:700}}>🔵 {infoCount}</div>}
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+            <div style={{display:"flex",border:"1px solid #1E293B",borderRadius:6,overflow:"hidden"}}>
+              <button type="button" onClick={()=>setGraphView("graph")} style={{background:graphView==="graph"?"#1E3A5F":"#0F172A",border:"none",color:graphView==="graph"?"#60A5FA":"#64748B",padding:"4px 10px",fontSize:11,cursor:"pointer"}}>Grafik</button>
+              <button type="button" onClick={()=>setGraphView("table")} style={{background:graphView==="table"?"#1E3A5F":"#0F172A",border:"none",color:graphView==="table"?"#60A5FA":"#64748B",padding:"4px 10px",fontSize:11,cursor:"pointer"}}>Tablo</button>
+            </div>
+            {ghostBtn("SVG indir",exportTopologySvg)}
+            {ghostBtn("Anlık kaydet",()=>{if(!graphData)return;setSnapshotBaseline({ids:[...new Set(graphData.nodes.map(n=>n.id))].sort(),t:Date.now()});setDiffSummary(null);})}
+            {ghostBtn("Karşılaştır",()=>{
+              if(!snapshotBaseline||!graphData){setDiffSummary(null);return;}
+              const now=new Set(graphData.nodes.map(n=>n.id));
+              let added=0,removed=0;
+              for(const id of now)if(!snapshotBaseline.ids.includes(id))added++;
+              for(const id of snapshotBaseline.ids)if(!now.has(id))removed++;
+              setDiffSummary({added,removed,total:graphData.nodes.length});
+            })}
+            <label style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#64748B",cursor:"pointer"}}>
+              <input type="checkbox" checked={namespaceLanes} onChange={e=>setNamespaceLanes(e.target.checked)}/> NS şeridi
+            </label>
+            <label style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:"#64748B",cursor:"pointer"}}>
+              <input type="checkbox" checked={maskSecrets} onChange={e=>setMaskSecrets(e.target.checked)}/> Secret gizle
+            </label>
+            {diffSummary&&<span style={{fontSize:10,color:"#A78BFA"}}>Δ +{diffSummary.added} / −{diffSummary.removed} (toplam {diffSummary.total})</span>}
+          </div>
         </div>
-        <svg ref={svgRef} style={{width:"100%",height:"100%",background:"radial-gradient(ellipse at 50% 50%, #0D1B2A 0%, #020817 100%)"}}/>
-        <div style={{position:"absolute",bottom:16,left:16,background:"#0F172A99",border:"1px solid #1E293B",borderRadius:8,padding:"5px 12px",fontSize:11,color:"#475569"}}>
+        {graphView==="table"?(
+          <div style={{flex:1,overflow:"auto",marginTop:88,padding:"8px 12px",boxSizing:"border-box"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead>
+                <tr style={{textAlign:"left",color:"#64748B",borderBottom:"1px solid #1E293B"}}>
+                  <th style={{padding:"6px 8px"}}>Tür</th><th style={{padding:"6px 8px"}}>Ad</th><th style={{padding:"6px 8px"}}>NS</th><th style={{padding:"6px 8px"}}>Durum</th><th style={{padding:"6px 8px"}}>Sağlık</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.nodes.map(n=>{
+                  const h=nodeHealthLevel(n.id,issues);
+                  const disp=maskSecrets&&n.kind==="Secret"?"••••":n.name;
+                  return(
+                    <tr key={n.id} onClick={()=>setSelected(n)} style={{cursor:"pointer",borderBottom:"1px solid #0F172A",background:selected?.id===n.id?"#1E293B":"transparent"}}
+                      onMouseEnter={e=>{if(selected?.id!==n.id)e.currentTarget.style.background="#0F172A";}}
+                      onMouseLeave={e=>{e.currentTarget.style.background=selected?.id===n.id?"#1E293B":"transparent";}}>
+                      <td style={{padding:"6px 8px",color:KINDS[n.kind]?.color,fontFamily:"monospace"}}>{KINDS[n.kind]?.tag||n.kind}</td>
+                      <td style={{padding:"6px 8px",color:"#E2E8F0"}}>{disp}</td>
+                      <td style={{padding:"6px 8px",color:"#64748B"}}>{n.namespace}</td>
+                      <td style={{padding:"6px 8px",color:"#94A3B8"}}>{n.status}</td>
+                      <td style={{padding:"6px 8px",color:HEALTH_COLORS[h]}}>{h}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ):(
+          <svg ref={svgRef} style={{flex:1,width:"100%",minHeight:0,background:"radial-gradient(ellipse at 50% 50%, #0D1B2A 0%, #020817 100%)"}}/>
+        )}
+        {graphView==="graph"&&<div style={{position:"absolute",bottom:16,left:16,background:"#0F172A99",border:"1px solid #1E293B",borderRadius:8,padding:"5px 12px",fontSize:11,color:"#475569"}}>
           scroll=zoom · drag=pan · click=detay
-        </div>
+        </div>}
       </div>
 
       {/* Right panel */}
       <div style={{width:278,background:"#0A1628",borderLeft:"1px solid #1E293B",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
+
+        {/* Events */}
+        <div style={{borderBottom:"1px solid #1E293B",flexShrink:0}}>
+          <div onClick={()=>setEventsOpen(o=>!o)} style={{padding:"8px 14px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",userSelect:"none"}}>
+            <span style={{fontWeight:600,fontSize:12}}>📜 Events ({clusterEvents.length})</span>
+            <span style={{color:"#64748B",fontSize:11}}>{eventsOpen?"▼":"▶"}</span>
+          </div>
+          {eventsOpen&&(
+            <div style={{maxHeight:160,overflowY:"auto",padding:"0 10px 8px",fontSize:10}}>
+              {clusterEvents.length===0&&<div style={{color:"#475569",padding:"6px 0"}}>Kayıt yok veya API erişilemedi</div>}
+              {clusterEvents.slice(0,80).map(ev=>(
+                <div key={ev.id} style={{borderBottom:"1px solid #0F172A",padding:"5px 0",lineHeight:1.35}}>
+                  <div style={{color:ev.type==="Warning"?"#F59E0B":"#94A3B8",fontWeight:600}}>{ev.reason||"—"} <span style={{color:"#475569",fontWeight:400}}>{ev.ns}</span></div>
+                  <div style={{color:"#64748B"}}>{ev.obj}</div>
+                  <div style={{color:"#CBD5E1"}}>{ev.msg}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Alerts */}
         <div style={{borderBottom:"1px solid #1E293B"}}>
@@ -911,6 +1201,17 @@ export default function App() {
               <span style={{fontWeight:700,fontSize:13}}>Detay</span>
               <button onClick={()=>setSelected(null)} style={{background:"transparent",border:"none",color:"#64748B",cursor:"pointer",fontSize:18,lineHeight:1}}>×</button>
             </div>
+            {(()=>{
+              const plural=KUBECTL_PLURAL[selected.kind]||`${selected.kind.toLowerCase()}s`;
+              const getL=`kubectl get ${plural} ${selected.name} -n ${selected.namespace}`;
+              const descL=`kubectl describe ${plural} ${selected.name} -n ${selected.namespace}`;
+              return(
+                <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+                  <button type="button" onClick={()=>copyText(getL)} style={{background:"#14532D",border:"1px solid #166534",color:"#BBF7D0",borderRadius:6,padding:"4px 8px",fontSize:10,cursor:"pointer"}}>get kopyala</button>
+                  <button type="button" onClick={()=>copyText(descL)} style={{background:"#0F172A",border:"1px solid #334155",color:"#CBD5E1",borderRadius:6,padding:"4px 8px",fontSize:10,cursor:"pointer"}}>describe kopyala</button>
+                </div>
+              );
+            })()}
             {(()=>{const h=nodeHealthLevel(selected.id,issues);return(
               <div style={{display:"inline-flex",alignItems:"center",gap:6,background:`${HEALTH_COLORS[h]}22`,border:`1px solid ${HEALTH_COLORS[h]}55`,borderRadius:20,padding:"3px 12px",marginBottom:10,fontSize:11,color:HEALTH_COLORS[h],fontWeight:600}}>
                 {h==="critical"?"🔴 Kritik":h==="warning"?"🟡 Uyarı":h==="info"?"🔵 Bilgi":"🟢 Sağlıklı"}
@@ -921,9 +1222,10 @@ export default function App() {
             </span>
 
             <div style={{marginTop:12}}>
-              {[["Ad",selected.name,"monospace"],["Namespace",selected.namespace],["Durum",selected.status],
+              {[[ "Ad", maskSecrets&&selected.kind==="Secret"?"••••":selected.name, "monospace"],["Namespace",selected.namespace],["Durum",selected.status],
                 ...(selected.restarts>0?[["Yeniden Başlama",`${selected.restarts} kez`]]:[]),
                 ...(selected.cpuPercent!=null?[["CPU Kullanımı",`%${selected.cpuPercent}`,null,selected.cpuPercent>80?"#EF4444":selected.cpuPercent>60?"#F59E0B":"#22C55E"]]:[]),
+                ...(selected.metricsCpuMilli!=null&&selected.cpuPercent==null?[["CPU (metrics)",`${selected.metricsCpuMilli}m`,null,"#94A3B8"]]:[]),
                 ...(selected.memPercent!=null?[["Memory Kullanımı",`%${selected.memPercent}`,null,selected.memPercent>85?"#EF4444":selected.memPercent>70?"#F59E0B":"#22C55E"]]:[]),
               ].map(([l,v,ff,vc])=>(
                 <div key={l} style={{marginBottom:9}}>
@@ -965,7 +1267,7 @@ export default function App() {
                           border:`1px solid ${oh!=="ok"?HEALTH_COLORS[oh]+"44":"transparent"}`}}>
                         <span style={{color:EDGE_COLORS[e.type],fontSize:11}}>{isOut?"→":"←"}</span>
                         <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:11,color:"#E2E8F0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{other.name}</div>
+                          <div style={{fontSize:11,color:"#E2E8F0",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{maskSecrets&&other.kind==="Secret"?"••••":other.name}</div>
                           <div style={{fontSize:9,color:"#475569"}}>{e.type}{e.label?` · ${e.label}`:""}</div>
                         </div>
                         <span style={{fontSize:9,color:KINDS[other.kind]?.color,fontFamily:"monospace"}}>{KINDS[other.kind]?.tag}</span>
