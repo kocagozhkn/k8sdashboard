@@ -5,6 +5,7 @@
 
 export const MESH_PROFILES = {
   off: { id: "off", label: "Kapalı" },
+  auto: { id: "auto", label: "Otomatik" },
   istio: {
     id: "istio",
     label: "Istio",
@@ -169,9 +170,31 @@ export function accumulateCiliumRows(rpsRows, errRows) {
   return { serviceInbound, workloadOutbound, serviceErrors, mesh: "cilium" };
 }
 
+/** Prometheus’ta hangi mesh metrikleri var — sıra: Istio, Linkerd, Cilium */
+export async function detectMeshProfileId(baseUrl) {
+  const root = (baseUrl || "").replace(/\/$/, "");
+  if (!root) return "off";
+  const probes = [
+    { id: "istio", query: "count(istio_requests_total)" },
+    { id: "linkerd", query: 'count(request_total{direction="outbound"})' },
+    { id: "cilium", query: "count(hubble_http_requests_total)" },
+  ];
+  for (const { id, query } of probes) {
+    try {
+      const rows = await fetchPrometheusInstant(root, query);
+      let sum = 0;
+      for (const row of rows || []) sum += parseSampleValue(row.value);
+      if (sum > 0) return id;
+    } catch {
+      /* bir sonraki profil */
+    }
+  }
+  return "off";
+}
+
 export async function fetchMeshTrafficStats(baseUrl, profileId) {
   const p = MESH_PROFILES[profileId];
-  if (!p || profileId === "off" || !p.queryRps) return null;
+  if (!p || profileId === "off" || profileId === "auto" || !p.queryRps) return null;
   const rpsRows = await fetchPrometheusInstant(baseUrl, p.queryRps);
   let errRows = [];
   try {
