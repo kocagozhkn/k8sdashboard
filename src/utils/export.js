@@ -26,7 +26,7 @@ export function exportTopologySvg(svgEl) {
 export function exportTableCsv(nodes, issues, nodeHealthLevel, maskSecrets) {
   const rows = nodes.map(n => [
     n.kind,
-    maskSecrets && n.kind === "Secret" ? "\u2022\u2022\u2022\u2022" : n.name,
+    maskSecrets && n.kind === "Secret" ? "••••" : n.name,
     n.namespace,
     n.status || "",
     nodeHealthLevel(n.id, issues),

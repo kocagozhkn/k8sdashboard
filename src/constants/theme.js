@@ -32,16 +32,16 @@ export const EDGE_COLORS = {
 };
 
 export const EDGE_LEGEND_TR = {
-  routes:   "Ingress\u2192Svc",
-  selects:  "Service\u2192Pod",
-  owns:     "Controller\u2192Pod",
+  routes:   "Ingress→Svc",
+  selects:  "Service→Pod",
+  owns:     "Controller→Pod",
   uses:     "Volume/Env",
-  calls:    "App \u00e7a\u011fr\u0131s\u0131",
-  scales:   "HPA \u00f6l\u00e7ekleme",
+  calls:    "App çağrısı",
+  scales:   "HPA ölçekleme",
   disrupts: "PDB koruma",
-  policies: "NetworkPolicy\u2192Pod",
-  hosts:    "Node\u2192Pod",
-  azure:    "Azure ba\u011f\u0131ml\u0131l\u0131\u011f\u0131",
+  policies: "NetworkPolicy→Pod",
+  hosts:    "Node→Pod",
+  azure:    "Azure bağımlılığı",
 };
 
 export const HEALTH_COLORS = {

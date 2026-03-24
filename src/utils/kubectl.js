@@ -231,7 +231,7 @@ export function buildEdges(nodes, rawItems) {
 
   const seen = new Set();
   return edges.filter(e => {
-    const k = `${e.source}\u2192${e.target}`;
+    const k = `${e.source}→${e.target}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;

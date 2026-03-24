@@ -33,7 +33,7 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
     const sN = nodes.map(n => ({ ...n }));
     const nMap = new Map(sN.map(n => [n.id, n]));
     const sE = edges.filter(e => nMap.has(e.source) && nMap.has(e.target)).map(e => ({ ...e }));
-    const showName = d => (maskSecrets && d.kind === "Secret" ? "\u2022\u2022\u2022\u2022" : d.name);
+    const showName = d => (maskSecrets && d.kind === "Secret" ? "••••" : d.name);
 
     const sim = d3.forceSimulation(sN)
       .force("link", d3.forceLink(sE).id(d => d.id).distance(namespaceLanes ? 200 : 230).strength(0.4))
@@ -62,7 +62,7 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
 
     const linkLbl = linkG.selectAll("text").data(sE.filter(e => e.label || e.trafficLabel)).join("text")
       .attr("text-anchor", "middle").attr("fill", d => d.trafficLabel && !d.label ? "#22D3EE" : "#A855F7").attr("font-size", "9px").attr("font-family", "monospace")
-      .text(d => (d.label && d.trafficLabel) ? `${d.label} \u00b7 ${d.trafficLabel}` : (d.label || d.trafficLabel || ""));
+      .text(d => (d.label && d.trafficLabel) ? `${d.label} · ${d.trafficLabel}` : (d.label || d.trafficLabel || ""));
 
     const nodeG = g.append("g");
     const node = nodeG.selectAll("g").data(sN).join("g").style("cursor", "pointer")
@@ -101,12 +101,12 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
 
     // Health icon
     node.append("text").attr("x", NW / 2 - 22).attr("y", -NH / 2 + 17).attr("font-size", "12px").attr("text-anchor", "middle")
-      .text(d => { const h = nodeHealthLevel(d.id, issues); return h === "critical" ? "\ud83d\udd34" : h === "warning" ? "\ud83d\udfe1" : h === "info" ? "\ud83d\udd35" : "\ud83d\udfe2"; });
+      .text(d => { const h = nodeHealthLevel(d.id, issues); return h === "critical" ? "🔴" : h === "warning" ? "🟡" : h === "info" ? "🔵" : "🟢"; });
 
     // Name
     node.append("text").attr("y", 5).attr("text-anchor", "middle")
       .attr("fill", "#E2E8F0").attr("font-size", "12px").attr("font-weight", "600")
-      .text(d => { const n = showName(d); return n.length > 21 ? n.slice(0, 20) + "\u2026" : n; });
+      .text(d => { const n = showName(d); return n.length > 21 ? n.slice(0, 20) + "…" : n; });
 
     // Status + metrics
     node.append("text").attr("y", NH / 2 - 8).attr("text-anchor", "middle")
@@ -120,16 +120,16 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
       })
       .text(d => {
         const s = d.status || "";
-        const sl = s.length > 14 ? s.slice(0, 13) + "\u2026" : s;
+        const sl = s.length > 14 ? s.slice(0, 13) + "…" : s;
         const parts = [sl];
         if (d.cpuPercent != null) parts.push(`CPU:${d.cpuPercent}%`);
         else if (d.metricsCpuMilli != null) parts.push(`CPU:${d.metricsCpuMilli}m`);
         if (d.memPercent != null) parts.push(`MEM:${d.memPercent}%`);
-        if (d.trafficInRps != null) parts.push(`\u2193${formatShortRps(d.trafficInRps)}rps`);
-        if (d.trafficOutRps != null) parts.push(`\u2191${formatShortRps(d.trafficOutRps)}rps`);
+        if (d.trafficInRps != null) parts.push(`↓${formatShortRps(d.trafficInRps)}rps`);
+        if (d.trafficOutRps != null) parts.push(`↑${formatShortRps(d.trafficOutRps)}rps`);
         if (d.trafficErrRatio > 0.02) parts.push(`${(d.trafficErrRatio * 100).toFixed(0)}%err`);
         const line = parts.join("  ");
-        return line.length > 38 ? line.slice(0, 37) + "\u2026" : line;
+        return line.length > 38 ? line.slice(0, 37) + "…" : line;
       });
 
     // Restart badge
@@ -139,7 +139,7 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
     node.filter(d => d.restarts >= 3).append("text")
       .attr("x", NW / 2 - 21).attr("y", -NH / 2 + 33).attr("text-anchor", "middle")
       .attr("fill", d => d.restarts >= 10 ? "#FCA5A5" : "#FCD34D").attr("font-size", "9px").attr("font-weight", "bold").attr("font-family", "monospace")
-      .text(d => `\u21ba${d.restarts}`);
+      .text(d => `↺${d.restarts}`);
 
     // Namespace label
     node.append("text").attr("y", NH / 2 + 13).attr("text-anchor", "middle")

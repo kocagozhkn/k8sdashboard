@@ -255,7 +255,7 @@ export default function App() {
 
   // ── Actions ──
   const loadDemo = () => { setErr(""); const g = enrichGraphData(DEMO); setGraphData(g); setSelected(null); setNsFilter(pickInitialNamespace(g.nodes)); setScreen("graph"); void loadMeshTraffic(); };
-  const applyInput = () => { setErr(""); try { const p = enrichGraphData(parseKubectl(rawInput)); setGraphData(p); setSelected(null); setNsFilter(pickInitialNamespace(p.nodes)); setScreen("graph"); void loadMeshTraffic(); } catch (e) { setErr("JSON hatas\u0131: " + e.message); } };
+  const applyInput = () => { setErr(""); try { const p = enrichGraphData(parseKubectl(rawInput)); setGraphData(p); setSelected(null); setNsFilter(pickInitialNamespace(p.nodes)); setScreen("graph"); void loadMeshTraffic(); } catch (e) { setErr("JSON hatası: " + e.message); } };
 
   const fetchAPI = useCallback(async (apiBaseOverride, opts = {}) => {
     setLoading(true); setErr("");
@@ -266,7 +266,7 @@ export default function App() {
       const url = kubernetesListFetchUrl(base, pathSuffix);
       try {
         const r = await fetch(url, { headers: hdr, cache: "no-store", credentials: "omit" });
-        if (!r.ok) { let detail = ""; try { const t = await r.text(); if (t) detail = t.slice(0, 180); } catch { /* */ } failures.push(`${pathSuffix} \u2192 HTTP ${r.status}${detail ? `: ${detail}` : ""}`); return; }
+        if (!r.ok) { let detail = ""; try { const t = await r.text(); if (t) detail = t.slice(0, 180); } catch { /* */ } failures.push(`${pathSuffix} → HTTP ${r.status}${detail ? `: ${detail}` : ""}`); return; }
         const text = await r.text();
         if (!text) return;
         const d = JSON.parse(text);
@@ -284,8 +284,8 @@ export default function App() {
     setClusterEvents(ev);
     if (!results.length) {
       setFetchWarnings([]);
-      const corsHint = hdr.Authorization ? " Do\u011frudan token ile \u00e7a\u011fr\u0131da CORS engeli olabilir; kubectl proxy --port=8001 deneyin." : "";
-      setErr("API'den kay\u0131t al\u0131namad\u0131 (liste bo\u015f veya t\u00fcm istekler ba\u015far\u0131s\u0131z)." + corsHint + (failures.length ? ` Detay: ${failures.slice(0, 3).join(" \u00b7 ")}` : ""));
+      const corsHint = hdr.Authorization ? " Doğrudan token ile çağrıda CORS engeli olabilir; kubectl proxy --port=8001 deneyin." : "";
+      setErr("API'den kayıt alınamadı (liste boş veya tüm istekler başarısız)." + corsHint + (failures.length ? ` Detay: ${failures.slice(0, 3).join(" · ")}` : ""));
       setMeshStats(null); setLoading(false); return;
     }
     setFetchWarnings(failures.length ? failures : []);
@@ -329,7 +329,7 @@ export default function App() {
     <div style={{ background: "#020817", minHeight: "100vh", color: "#E2E8F0", fontFamily: "system-ui,sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, padding: 24 }}>
       <div style={{ width: 40, height: 40, border: "3px solid #1E293B", borderTopColor: "#6366F1", borderRadius: "50%", animation: "k8s-spin .8s linear infinite" }} />
       <style>{`@keyframes k8s-spin{to{transform:rotate(360deg)}}`}</style>
-      <div style={{ fontSize: 15, fontWeight: 600, color: "#CBD5E1" }}>Bulundu\u011funuz k\u00fcmenin API'sine ba\u011flan\u0131l\u0131yor\u2026</div>
+      <div style={{ fontSize: 15, fontWeight: 600, color: "#CBD5E1" }}>Bulunduğunuz kümenin API'sine bağlanılıyor…</div>
     </div>
   );
 
@@ -338,13 +338,13 @@ export default function App() {
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: 11, color: "#475569", letterSpacing: 3, textTransform: "uppercase", marginBottom: 8 }}>Open Source &middot; Self-Hosted</div>
         <h1 style={{ fontSize: 38, fontWeight: 800, margin: 0, background: "linear-gradient(135deg,#3B82F6,#A855F7,#EF4444)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>K8s Topology Viewer</h1>
-        <p style={{ color: "#64748B", marginTop: 8, fontSize: 14 }}>T\u00fcm kaynaklar\u0131, ba\u011flant\u0131lar\u0131, hatalar\u0131 ve bottleneck'leri otomatik ke\u015ffeder</p>
+        <p style={{ color: "#64748B", marginTop: 8, fontSize: 14 }}>Tüm kaynakları, bağlantıları, hataları ve bottleneck'leri otomatik keşfeder</p>
       </div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center" }}>
         {[
-          { icon: "\ud83c\udfae", title: "Demo Modu", sub: "Hata & bottleneck \u00f6rnekleriyle", color: "#3B82F6", action: loadDemo },
-          { icon: "\ud83d\udccb", title: "kubectl Yap\u0131\u015ft\u0131r", sub: "kubectl get all -A -o json", color: "#A855F7", action: () => { setErr(""); setScreen("input"); } },
-          { icon: "\ud83d\udd0c", title: "Canl\u0131 API", sub: "K\u00fcmede pod proxy \u00b7 yerelde kubectl proxy", color: "#22C55E", action: () => { setErr(""); setScreen("api"); } },
+          { icon: "🎮", title: "Demo Modu", sub: "Hata & bottleneck örnekleriyle", color: "#3B82F6", action: loadDemo },
+          { icon: "📋", title: "kubectl Yapıştır", sub: "kubectl get all -A -o json", color: "#A855F7", action: () => { setErr(""); setScreen("input"); } },
+          { icon: "🔌", title: "Canlı API", sub: "Kümede pod proxy · yerelde kubectl proxy", color: "#22C55E", action: () => { setErr(""); setScreen("api"); } },
         ].map(({ icon, title, sub, color, action }) => (
           <div key={title} onClick={action} style={{ background: "#0F172A", border: `1px solid ${color}33`, borderRadius: 14, padding: "24px 32px", cursor: "pointer", minWidth: 185, textAlign: "center", transition: "border-color .2s" }}
             onMouseEnter={e => e.currentTarget.style.borderColor = color} onMouseLeave={e => e.currentTarget.style.borderColor = color + "33"}>
@@ -358,31 +358,31 @@ export default function App() {
       {/* Cluster presets + kubeconfig */}
       <div style={{ width: "100%", maxWidth: 620, background: "#0F172A", border: "1px solid #6366F133", borderRadius: 14, padding: "18px 20px", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 16 }}>
         <div>
-          <div style={{ fontSize: 11, color: "#6366F1", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>\u00d6n tan\u0131ml\u0131 k\u00fcme</div>
+          <div style={{ fontSize: 11, color: "#6366F1", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Ön tanımlı küme</div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "stretch" }}>
             <select value={clusterPresetId} onChange={e => setClusterPresetId(e.target.value)} style={{ flex: "1 1 220px", minWidth: 0, background: "#020817", border: "1px solid #1E293B", borderRadius: 8, color: "#E2E8F0", fontSize: 14, padding: "10px 12px", cursor: "pointer" }}>
-              <optgroup label="\u00d6n tan\u0131ml\u0131">{CLUSTER_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</optgroup>
-              {kubeContexts.length > 0 && <optgroup label="kubeconfig">{kubeContexts.map(c => <option key={c.name} value={`kc:${c.name}`}>{c.name}{c.hasToken ? "" : " \u00b7 token yok"}</option>)}</optgroup>}
+              <optgroup label="Ön tanımlı">{CLUSTER_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</optgroup>
+              {kubeContexts.length > 0 && <optgroup label="kubeconfig">{kubeContexts.map(c => <option key={c.name} value={`kc:${c.name}`}>{c.name}{c.hasToken ? "" : " · token yok"}</option>)}</optgroup>}
             </select>
             <button type="button" disabled={loading} onClick={async () => {
               if (clusterPresetId.startsWith("kc:")) {
                 const ctxName = clusterPresetId.slice(3);
-                let doc; try { doc = parseKubeconfigYaml(kubeconfigYaml); } catch { setErr("\u00d6nce ge\u00e7erli kubeconfig yap\u0131\u015ft\u0131r\u0131n."); return; }
+                let doc; try { doc = parseKubeconfigYaml(kubeconfigYaml); } catch { setErr("Önce geçerli kubeconfig yapıştırın."); return; }
                 const r = resolveKubeconfigContext(doc, ctxName);
-                if (!r) { setErr("Context \u00e7\u00f6z\u00fclemedi."); return; }
-                if (r.exec) { setErr("Bu context exec kullan\u0131yor. kubectl proxy --port=8001 deneyin."); return; }
-                if (r.clientCertificateData && r.clientKeyData && !r.token) { setErr("Bu context istemci sertifikas\u0131 kullan\u0131yor; kubectl proxy deneyin."); return; }
-                if (!r.token) { setErr("kubeconfig i\u00e7inde token yok."); return; }
+                if (!r) { setErr("Context çözülemedi."); return; }
+                if (r.exec) { setErr("Bu context exec kullanıyor. kubectl proxy --port=8001 deneyin."); return; }
+                if (r.clientCertificateData && r.clientKeyData && !r.token) { setErr("Bu context istemci sertifikası kullanıyor; kubectl proxy deneyin."); return; }
+                if (!r.token) { setErr("kubeconfig içinde token yok."); return; }
                 const base = r.server.replace(/\/$/, ""); setApiUrl(base);
                 const auth = { Authorization: `Bearer ${r.token}` }; setApiFetchHeaders(auth); setErr("");
                 await fetchAPI(base, { headers: auth }); return;
               }
               const preset = CLUSTER_PRESETS.find(p => p.id === clusterPresetId);
               const resolved = resolvePresetApiBase(preset);
-              if (!resolved) { setErr("Bu k\u00fcme i\u00e7in API adresi yok."); return; }
+              if (!resolved) { setErr("Bu küme için API adresi yok."); return; }
               setApiUrl(resolved); setApiFetchHeaders({}); setErr(""); await fetchAPI(resolved);
             }} style={{ background: "#6366F1", border: "none", color: "#fff", borderRadius: 8, padding: "10px 20px", cursor: loading ? "wait" : "pointer", fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
-              {loading ? "\u2026" : "Ba\u011flan \u2192"}
+              {loading ? "…" : "Bağlan →"}
             </button>
           </div>
         </div>
@@ -393,12 +393,12 @@ export default function App() {
             try { const t = await f.text(); setKubeconfigYaml(t); const doc = parseKubeconfigYaml(t); setKubeContexts(listKubeconfigContexts(doc)); setErr(""); } catch (ex) { setKubeContexts([]); setErr(ex.message || String(ex)); }
             e.target.value = "";
           }} />
-          <textarea value={kubeconfigYaml} onChange={e => setKubeconfigYaml(e.target.value)} placeholder="apiVersion: v1&#10;kind: Config&#10;clusters: \u2026" spellCheck={false}
+          <textarea value={kubeconfigYaml} onChange={e => setKubeconfigYaml(e.target.value)} placeholder="apiVersion: v1&#10;kind: Config&#10;clusters: …" spellCheck={false}
             style={{ width: "100%", minHeight: 120, boxSizing: "border-box", background: "#020817", border: "1px solid #1E293B", borderRadius: 8, color: "#E2E8F0", fontFamily: "ui-monospace,monospace", fontSize: 11, padding: 12, resize: "vertical", outline: "none", marginBottom: 10 }} />
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <button type="button" onClick={() => fileInputRef.current?.click()} style={{ background: "#14532D", border: "1px solid #166534", color: "#BBF7D0", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Dosya se\u00e7</button>
-            <button type="button" onClick={() => { try { const doc = parseKubeconfigYaml(kubeconfigYaml); setKubeContexts(listKubeconfigContexts(doc)); setErr(""); } catch (ex) { setKubeContexts([]); setErr(ex.message || String(ex)); } }} style={{ background: "#0F172A", border: "1px solid #334155", color: "#CBD5E1", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12 }}>Context listesini g\u00fcncelle</button>
-            <button type="button" onClick={() => { saveKubeconfigToStorage(kubeconfigYaml); setErr(""); }} style={{ background: "#0F172A", border: "1px solid #334155", color: "#CBD5E1", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12 }}>Taray\u0131c\u0131da sakla</button>
+            <button type="button" onClick={() => fileInputRef.current?.click()} style={{ background: "#14532D", border: "1px solid #166534", color: "#BBF7D0", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Dosya seç</button>
+            <button type="button" onClick={() => { try { const doc = parseKubeconfigYaml(kubeconfigYaml); setKubeContexts(listKubeconfigContexts(doc)); setErr(""); } catch (ex) { setKubeContexts([]); setErr(ex.message || String(ex)); } }} style={{ background: "#0F172A", border: "1px solid #334155", color: "#CBD5E1", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12 }}>Context listesini güncelle</button>
+            <button type="button" onClick={() => { saveKubeconfigToStorage(kubeconfigYaml); setErr(""); }} style={{ background: "#0F172A", border: "1px solid #334155", color: "#CBD5E1", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12 }}>Tarayıcıda sakla</button>
             <button type="button" onClick={() => { clearKubeconfigStorage(); setKubeconfigYaml(""); setKubeContexts([]); setErr(""); }} style={{ background: "#450A0A", border: "1px solid #7F1D1D", color: "#FCA5A5", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 12 }}>Temizle</button>
           </div>
         </div>
@@ -407,10 +407,10 @@ export default function App() {
       {/* Health legend */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", maxWidth: 580 }}>
         {[
-          { l: "\ud83d\udd34 Critical", c: "#EF4444", t: "CrashLoop, OOMKilled, Evicted, PVC sorunlar\u0131" },
-          { l: "\ud83d\udfe1 Warning", c: "#F59E0B", t: "Pending, PartialReady, Y\u00fcksek CPU/Memory" },
-          { l: "\ud83d\udd35 Info", c: "#60A5FA", t: "Orphan kaynak, HighFanOut bottleneck" },
-          { l: "\ud83d\udfe2 OK", c: "#22C55E", t: "Sa\u011fl\u0131kl\u0131 kaynaklar" },
+          { l: "🔴 Critical", c: "#EF4444", t: "CrashLoop, OOMKilled, Evicted, PVC sorunları" },
+          { l: "🟡 Warning", c: "#F59E0B", t: "Pending, PartialReady, Yüksek CPU/Memory" },
+          { l: "🔵 Info", c: "#60A5FA", t: "Orphan kaynak, HighFanOut bottleneck" },
+          { l: "🟢 OK", c: "#22C55E", t: "Sağlıklı kaynaklar" },
         ].map(({ l, c, t }) => (
           <div key={l} style={{ background: "#0F172A", border: `1px solid ${c}33`, borderRadius: 8, padding: "8px 14px", textAlign: "center", flex: "1 1 200px" }}>
             <div style={{ fontWeight: 600, fontSize: 12, color: c }}>{l}</div>
@@ -423,16 +423,16 @@ export default function App() {
 
   if (screen === "input") return (
     <div style={{ background: "#020817", minHeight: "100vh", color: "#E2E8F0", fontFamily: "system-ui,sans-serif", display: "flex", flexDirection: "column", padding: 24, gap: 14, maxWidth: 800, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{ghostBtn("\u2190 Geri", () => setScreen("home"))}<h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>kubectl \u00c7\u0131kt\u0131s\u0131n\u0131 Yap\u0131\u015ft\u0131r</h2></div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{ghostBtn("← Geri", () => setScreen("home"))}<h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>kubectl Çıktısını Yapıştır</h2></div>
       <div style={{ background: "#0F172A", borderRadius: 10, padding: 14, border: "1px solid #1E293B", fontSize: 13 }}>
         <code style={{ color: "#A855F7", display: "block", marginBottom: 4 }}>kubectl get all,ingresses,configmaps,secrets,pvc -A -o json</code>
-        <span style={{ color: "#64748B", fontSize: 11 }}>\u00e7\u0131kt\u0131s\u0131n\u0131 a\u015fa\u011f\u0131ya yap\u0131\u015ft\u0131r\u0131n</span>
+        <span style={{ color: "#64748B", fontSize: 11 }}>çıktısını aşağıya yapıştırın</span>
       </div>
       <textarea value={rawInput} onChange={e => setRawInput(e.target.value)} placeholder='{"kind":"List","items":[...]}'
         style={{ flex: 1, minHeight: 320, background: "#0F172A", border: "1px solid #1E293B", borderRadius: 10, color: "#E2E8F0", fontFamily: "monospace", fontSize: 12, padding: 14, resize: "vertical", outline: "none" }} />
       {err && <div style={{ color: "#EF4444", fontSize: 13, background: "#450A0A", padding: "8px 14px", borderRadius: 8 }}>{err}</div>}
       <div style={{ display: "flex", gap: 10 }}>
-        <button onClick={applyInput} style={{ background: "#3B82F6", border: "none", color: "#fff", borderRadius: 8, padding: "9px 20px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>G\u00f6rselle\u015ftir \u2192</button>
+        <button onClick={applyInput} style={{ background: "#3B82F6", border: "none", color: "#fff", borderRadius: 8, padding: "9px 20px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>Görselleştir →</button>
         {ghostBtn("Demo", loadDemo)}
       </div>
     </div>
@@ -440,16 +440,16 @@ export default function App() {
 
   if (screen === "api") return (
     <div style={{ background: "#020817", minHeight: "100vh", color: "#E2E8F0", fontFamily: "system-ui,sans-serif", display: "flex", flexDirection: "column", padding: 24, gap: 14, maxWidth: 620, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{ghostBtn("\u2190 Geri", () => setScreen("home"))}<h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Kubernetes API Ba\u011flant\u0131s\u0131</h2></div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{ghostBtn("← Geri", () => setScreen("home"))}<h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Kubernetes API Bağlantısı</h2></div>
       <div style={{ background: "#0F172A", borderRadius: 10, padding: 14, border: "1px solid #1E293B", fontSize: 13 }}>
-        <div style={{ color: "#22C55E", fontWeight: 600, marginBottom: 6 }}>Yerel geli\u015ftirme:</div>
+        <div style={{ color: "#22C55E", fontWeight: 600, marginBottom: 6 }}>Yerel geliştirme:</div>
         <code style={{ color: "#E2E8F0", background: "#020817", display: "block", padding: "8px 12px", borderRadius: 6, marginBottom: 10 }}>kubectl proxy --port=8001</code>
       </div>
       <div><label style={{ fontSize: 12, color: "#64748B", display: "block", marginBottom: 6 }}>API URL</label>
         <input value={apiUrl} onChange={e => setApiUrl(e.target.value)} style={{ width: "100%", background: "#0F172A", border: "1px solid #1E293B", borderRadius: 8, color: "#E2E8F0", fontSize: 14, padding: "10px 14px", outline: "none", boxSizing: "border-box" }} /></div>
       {err && <div style={{ color: "#EF4444", fontSize: 13, background: "#450A0A", padding: "8px 14px", borderRadius: 8 }}>{err}</div>}
       <div style={{ display: "flex", gap: 10 }}>
-        <button onClick={() => fetchAPI()} style={{ background: "#22C55E", border: "none", color: "#000", borderRadius: 8, padding: "9px 20px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>{loading ? "Ba\u011flan\u0131yor..." : "Ba\u011flan ve Ke\u015ffet \u2192"}</button>
+        <button onClick={() => fetchAPI()} style={{ background: "#22C55E", border: "none", color: "#000", borderRadius: 8, padding: "9px 20px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}>{loading ? "Bağlanıyor..." : "Bağlan ve Keşfet →"}</button>
         {ghostBtn("Demo", loadDemo)}
       </div>
     </div>
@@ -470,25 +470,25 @@ export default function App() {
       <div style={{ flex: 1, position: "relative", overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {fetchWarnings.length > 0 && (
           <div style={{ flexShrink: 0, background: "#422006", borderBottom: "1px solid #D97706", color: "#FDE68A", fontSize: 11, padding: "6px 12px", lineHeight: 1.4 }}>
-            <b>K\u0131smi API uyar\u0131s\u0131</b> \u2014 {fetchWarnings.length} istek ba\u015far\u0131s\u0131z
+            <b>Kısmi API uyarısı</b> — {fetchWarnings.length} istek başarısız
           </div>
         )}
         <div style={{ position: "absolute", top: fetchWarnings.length ? 44 : 12, left: 12, right: 12, zIndex: 10, display: "flex", flexDirection: "column", gap: 6 }}>
           {/* Toolbar row 1 */}
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            {ghostBtn("\u2190 Men\u00fc", () => { setScreen("home"); setSelected(null); })}
-            {ghostBtn("\ud83d\udccb Yeni", () => setScreen("input"))}
-            {ghostBtn(loading ? "\u2026" : "Yenile (r)", () => fetchAPI())}
+            {ghostBtn("← Menü", () => { setScreen("home"); setSelected(null); })}
+            {ghostBtn("📋 Yeni", () => setScreen("input"))}
+            {ghostBtn(loading ? "…" : "Yenile (r)", () => fetchAPI())}
             <select value={String(refreshIntervalSec)} onChange={e => setRefreshIntervalSec(Number(e.target.value))} style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer" }}>
-              <option value="0">Otomatik kapal\u0131</option>
+              <option value="0">Otomatik kapalı</option>
               <option value="30">30 sn</option>
               <option value="60">1 dk</option>
               <option value="120">2 dk</option>
             </select>
             {lastRefreshAt && <span style={{ fontSize: 10, color: "#475569" }}>Son: {lastRefreshAt.toLocaleTimeString()}</span>}
-            {critCount > 0 && <div style={{ background: "#7F1D1D", border: "1px solid #EF4444", borderRadius: 20, padding: "3px 10px", fontSize: 11, color: "#FCA5A5", fontWeight: 700 }}>\ud83d\udd34 {critCount}</div>}
-            {warnCount > 0 && <div style={{ background: "#451A03", border: "1px solid #F59E0B", borderRadius: 20, padding: "3px 10px", fontSize: 11, color: "#FCD34D", fontWeight: 700 }}>\ud83d\udfe1 {warnCount}</div>}
-            {infoCount > 0 && <div style={{ background: "#0C1A3A", border: "1px solid #60A5FA", borderRadius: 20, padding: "3px 10px", fontSize: 11, color: "#93C5FD", fontWeight: 700 }}>\ud83d\udd35 {infoCount}</div>}
+            {critCount > 0 && <div style={{ background: "#7F1D1D", border: "1px solid #EF4444", borderRadius: 20, padding: "3px 10px", fontSize: 11, color: "#FCA5A5", fontWeight: 700 }}>🔴 {critCount}</div>}
+            {warnCount > 0 && <div style={{ background: "#451A03", border: "1px solid #F59E0B", borderRadius: 20, padding: "3px 10px", fontSize: 11, color: "#FCD34D", fontWeight: 700 }}>🟡 {warnCount}</div>}
+            {infoCount > 0 && <div style={{ background: "#0C1A3A", border: "1px solid #60A5FA", borderRadius: 20, padding: "3px 10px", fontSize: 11, color: "#93C5FD", fontWeight: 700 }}>🔵 {infoCount}</div>}
           </div>
           {/* Toolbar row 2 */}
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -498,14 +498,14 @@ export default function App() {
             </div>
             {ghostBtn("SVG indir", () => exportTopologySvg(svgRef.current))}
             {ghostBtn("CSV indir", () => exportTableCsv(filtered.nodes, issues, nodeHealthLevel, maskSecrets))}
-            {ghostBtn("Anl\u0131k kaydet", () => {
+            {ghostBtn("Anlık kaydet", () => {
               if (!graphData) return;
               setSnapshotBaseline({ ids: [...new Set(graphData.nodes.map(n => n.id))].sort(), t: Date.now() });
               const snap = makeSnapshot(graphData);
               setSnapshotHistory(prev => [snap, ...prev.filter(s => s.id !== snap.id)].slice(0, 12));
               setCompareSnapshotId(snap.id); setDiffSummary(null);
             })}
-            {ghostBtn("Kar\u015f\u0131la\u015ft\u0131r", () => {
+            {ghostBtn("Karşılaştır", () => {
               if (!snapshotBaseline || !graphData) { setDiffSummary(null); return; }
               const now = new Set(graphData.nodes.map(n => n.id));
               const baseline = new Set(snapshotBaseline.ids);
@@ -515,21 +515,21 @@ export default function App() {
               setDiffSummary({ added, removed, total: graphData.nodes.length });
             })}
             <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#64748B", cursor: "pointer" }}>
-              <input type="checkbox" checked={namespaceLanes} onChange={e => setNamespaceLanes(e.target.checked)} /> NS \u015feridi
+              <input type="checkbox" checked={namespaceLanes} onChange={e => setNamespaceLanes(e.target.checked)} /> NS şeridi
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#64748B", cursor: "pointer" }}>
               <input type="checkbox" checked={maskSecrets} onChange={e => setMaskSecrets(e.target.checked)} /> Secret gizle
             </label>
-            {diffSummary && <span style={{ fontSize: 10, color: "#A78BFA" }}>\u0394 +{diffSummary.added} / \u2212{diffSummary.removed} (toplam {diffSummary.total})</span>}
+            {diffSummary && <span style={{ fontSize: 10, color: "#A78BFA" }}>Δ +{diffSummary.added} / −{diffSummary.removed} (toplam {diffSummary.total})</span>}
           </div>
           {/* Toolbar row 3 - snapshots */}
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 0.5 }}>Ge\u00e7mi\u015f</span>
+            <span style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 0.5 }}>Geçmiş</span>
             <select value={compareSnapshotId} onChange={e => setCompareSnapshotId(e.target.value)} style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer", minWidth: 220 }}>
-              <option value="">Snapshot se\u00e7in</option>
+              <option value="">Snapshot seçin</option>
               {snapshotHistory.map(s => <option key={s.id} value={s.id}>{new Date(s.createdAt).toLocaleString()} &middot; {s.total} kaynak</option>)}
             </select>
-            {historyDiff && <span style={{ fontSize: 10, color: "#CBD5E1" }}>Eklenen {historyDiff.added.length} &middot; Silinen {historyDiff.removed.length} &middot; Durum de\u011fi\u015fen {historyDiff.changed.length}</span>}
+            {historyDiff && <span style={{ fontSize: 10, color: "#CBD5E1" }}>Eklenen {historyDiff.added.length} &middot; Silinen {historyDiff.removed.length} &middot; Durum değişen {historyDiff.changed.length}</span>}
           </div>
           {/* Toolbar row 4 - mesh */}
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", maxWidth: "100%" }}>
@@ -537,15 +537,15 @@ export default function App() {
             <select value={meshProfile} onChange={e => setMeshProfile(e.target.value)} style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer" }}>
               {Object.entries(MESH_PROFILES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
-            {meshProfile === "auto" && meshAutoResolved && meshAutoResolved !== "off" && <span style={{ fontSize: 10, color: "#64748B" }}>\u2192 {MESH_PROFILES[meshAutoResolved]?.label || meshAutoResolved}</span>}
-            {meshProfile === "auto" && meshAutoResolved === "off" && <span style={{ fontSize: 10, color: "#64748B" }}>\u2192 mesh yok</span>}
+            {meshProfile === "auto" && meshAutoResolved && meshAutoResolved !== "off" && <span style={{ fontSize: 10, color: "#64748B" }}>→ {MESH_PROFILES[meshAutoResolved]?.label || meshAutoResolved}</span>}
+            {meshProfile === "auto" && meshAutoResolved === "off" && <span style={{ fontSize: 10, color: "#64748B" }}>→ mesh yok</span>}
             {isUiServedViaTopologyPod() ? (
               <span style={{ flex: "1 1 200px", minWidth: 160, maxWidth: 420, fontSize: 10, color: "#64748B", padding: "5px 0" }}>Prometheus: otomatik &middot; /prometheus</span>
             ) : (
               <input type="url" value={prometheusUrl} onChange={e => setPrometheusUrl(e.target.value)} placeholder="/prometheus veya tam URL"
                 style={{ flex: "1 1 200px", minWidth: 160, maxWidth: 420, background: "#020817", border: "1px solid #1E293B", borderRadius: 6, color: "#E2E8F0", fontSize: 11, padding: "5px 8px", outline: "none" }} />
             )}
-            {ghostBtn(meshLoading ? "Trafik\u2026" : "Trafik yenile", () => void loadMeshTraffic())}
+            {ghostBtn(meshLoading ? "Trafik…" : "Trafik yenile", () => void loadMeshTraffic())}
             {meshFetchedAt && <span style={{ fontSize: 10, color: "#22D3EE" }}>RPS: {meshFetchedAt.toLocaleTimeString()}</span>}
             {meshErr && <span style={{ fontSize: 10, color: "#F87171", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={meshErr}>{meshErr}</span>}
           </div>
@@ -556,13 +556,13 @@ export default function App() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
                 <tr style={{ textAlign: "left", color: "#64748B", borderBottom: "1px solid #1E293B" }}>
-                  <th style={{ padding: "6px 8px" }}>T\u00fcr</th><th style={{ padding: "6px 8px" }}>Ad</th><th style={{ padding: "6px 8px" }}>NS</th><th style={{ padding: "6px 8px" }}>Durum</th><th style={{ padding: "6px 8px" }}>Sa\u011fl\u0131k</th>
+                  <th style={{ padding: "6px 8px" }}>Tür</th><th style={{ padding: "6px 8px" }}>Ad</th><th style={{ padding: "6px 8px" }}>NS</th><th style={{ padding: "6px 8px" }}>Durum</th><th style={{ padding: "6px 8px" }}>Sağlık</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.nodes.map(n => {
                   const h = nodeHealthLevel(n.id, issues);
-                  const disp = maskSecrets && n.kind === "Secret" ? "\u2022\u2022\u2022\u2022" : n.name;
+                  const disp = maskSecrets && n.kind === "Secret" ? "••••" : n.name;
                   return (
                     <tr key={n.id} onClick={() => setSelected(n)} style={{ cursor: "pointer", borderBottom: "1px solid #0F172A", background: selected?.id === n.id ? "#1E293B" : "transparent" }}
                       onMouseEnter={e => { if (selected?.id !== n.id) e.currentTarget.style.background = "#0F172A"; }}
@@ -597,7 +597,7 @@ export default function App() {
         {/* Hot services */}
         {hotServices.length > 0 && (
           <div style={{ borderBottom: "1px solid #1E293B", flexShrink: 0, padding: "8px 12px", maxHeight: 140, overflowY: "auto" }}>
-            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Yo\u011fun servisler (gelen)</div>
+            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Yoğun servisler (gelen)</div>
             {hotServices.map((h, i) => (
               <div key={`${h.ns}/${h.name}-${i}`} style={{ fontSize: 10, marginBottom: 4, lineHeight: 1.35 }}>
                 <span style={{ color: "#22D3EE", fontFamily: "monospace" }}>{formatShortRps(h.rps)} rps</span>
@@ -611,15 +611,15 @@ export default function App() {
         {/* Events */}
         <div style={{ borderBottom: "1px solid #1E293B", flexShrink: 0 }}>
           <div onClick={() => setEventsOpen(o => !o)} style={{ padding: "8px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", userSelect: "none" }}>
-            <span style={{ fontWeight: 600, fontSize: 12 }}>\ud83d\udcdc Events ({clusterEvents.length})</span>
-            <span style={{ color: "#64748B", fontSize: 11 }}>{eventsOpen ? "\u25bc" : "\u25b6"}</span>
+            <span style={{ fontWeight: 600, fontSize: 12 }}>📜 Events ({clusterEvents.length})</span>
+            <span style={{ color: "#64748B", fontSize: 11 }}>{eventsOpen ? "▼" : "▶"}</span>
           </div>
           {eventsOpen && (
             <div style={{ maxHeight: 160, overflowY: "auto", padding: "0 10px 8px", fontSize: 10 }}>
-              {clusterEvents.length === 0 && <div style={{ color: "#475569", padding: "6px 0" }}>Kay\u0131t yok</div>}
+              {clusterEvents.length === 0 && <div style={{ color: "#475569", padding: "6px 0" }}>Kayıt yok</div>}
               {clusterEvents.slice(0, 80).map(ev => (
                 <div key={ev.id} style={{ borderBottom: "1px solid #0F172A", padding: "5px 0", lineHeight: 1.35 }}>
-                  <div style={{ color: ev.type === "Warning" ? "#F59E0B" : "#94A3B8", fontWeight: 600 }}>{ev.reason || "\u2014"} <span style={{ color: "#475569", fontWeight: 400 }}>{ev.ns}</span></div>
+                  <div style={{ color: ev.type === "Warning" ? "#F59E0B" : "#94A3B8", fontWeight: 600 }}>{ev.reason || "—"} <span style={{ color: "#475569", fontWeight: 400 }}>{ev.ns}</span></div>
                   <div style={{ color: "#64748B" }}>{ev.obj}</div>
                   <div style={{ color: "#CBD5E1" }}>{ev.msg}</div>
                 </div>
@@ -631,7 +631,7 @@ export default function App() {
         {/* Snapshot diff */}
         {historyDiff && (
           <div style={{ borderBottom: "1px solid #1E293B", padding: "8px 12px", flexShrink: 0 }}>
-            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Snapshot fark\u0131</div>
+            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Snapshot farkı</div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
               <span style={{ fontSize: 10, color: "#86EFAC" }}>+ {historyDiff.added.length}</span>
               <span style={{ fontSize: 10, color: "#FCA5A5" }}>- {historyDiff.removed.length}</span>
@@ -643,16 +643,16 @@ export default function App() {
         {/* Alerts */}
         <div style={{ borderBottom: "1px solid #1E293B" }}>
           <div onClick={() => setAlertsOpen(o => !o)} style={{ padding: "10px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", userSelect: "none" }}>
-            <span style={{ fontWeight: 700, fontSize: 13 }}>\u26a0\ufe0f Sorunlar & Bottleneck</span>
+            <span style={{ fontWeight: 700, fontSize: 13 }}>⚠️ Sorunlar & Bottleneck</span>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {critCount > 0 && <span style={{ background: "#EF444422", color: "#EF4444", fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{critCount}</span>}
               {warnCount > 0 && <span style={{ background: "#F59E0B22", color: "#F59E0B", fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10 }}>{warnCount}</span>}
-              <span style={{ color: "#64748B", fontSize: 12 }}>{alertsOpen ? "\u25bc" : "\u25b6"}</span>
+              <span style={{ color: "#64748B", fontSize: 12 }}>{alertsOpen ? "▼" : "▶"}</span>
             </div>
           </div>
           {alertsOpen && (
             <div style={{ maxHeight: 280, overflowY: "auto", padding: "0 10px 10px" }}>
-              {issues.length === 0 && <div style={{ textAlign: "center", padding: "16px 0", color: "#22C55E", fontSize: 13 }}>\u2705 T\u00fcm kaynaklar sa\u011fl\u0131kl\u0131</div>}
+              {issues.length === 0 && <div style={{ textAlign: "center", padding: "16px 0", color: "#22C55E", fontSize: 13 }}>✅ Tüm kaynaklar sağlıklı</div>}
               {["critical", "warning", "info"].flatMap(level =>
                 issues.filter(i => i.level === level).map(issue => {
                   const n = filtered.nodes.find(n => n.id === issue.id);
@@ -664,7 +664,7 @@ export default function App() {
                         {n && <span style={{ fontSize: 9, color: "#475569" }}>{n.kind}</span>}
                       </div>
                       <div style={{ fontSize: 11, color: "#E2E8F0", marginBottom: 4, lineHeight: 1.4 }}>{issue.msg}</div>
-                      <div style={{ fontSize: 10, color: "#64748B", lineHeight: 1.4 }}>\ud83d\udca1 {issue.fix}</div>
+                      <div style={{ fontSize: 10, color: "#64748B", lineHeight: 1.4 }}>💡 {issue.fix}</div>
                     </div>
                   );
                 })

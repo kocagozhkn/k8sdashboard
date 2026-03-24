@@ -20,7 +20,7 @@ export class ErrorBoundary extends Component {
         }}>
           <div style={{ fontSize: 48 }}>&#x26A0;&#xFE0F;</div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#EF4444" }}>
-            Beklenmeyen bir hata olu\u015ftu
+            Beklenmeyen bir hata oluştu
           </h2>
           <pre style={{
             background: "#0F172A", border: "1px solid #1E293B", borderRadius: 8,
