@@ -1,8 +1,28 @@
 import { useEffect } from "react";
 import * as d3 from "d3";
-import { KINDS, EDGE_COLORS, HEALTH_COLORS, NW, NH } from "../constants/theme.js";
+import { KINDS, EDGE_COLORS, HEALTH_COLORS } from "../constants/theme.js";
+import { KIND_ICON, faceColor, shadeHex } from "../constants/icons.js";
 import { nodeHealthLevel } from "../utils/health.js";
 import { formatShortRps } from "../utils/mesh-prometheus.js";
+
+/* Architectural tiers — top-to-bottom flow */
+const KIND_TIER = {
+  AzureService: 0,
+  Ingress: 1,
+  Service: 2,
+  Deployment: 3, StatefulSet: 3, DaemonSet: 3, CronJob: 3, Job: 3,
+  ReplicaSet: 4,
+  Pod: 5,
+  HorizontalPodAutoscaler: 3,
+  PodDisruptionBudget: 3,
+  NetworkPolicy: 2,
+  ConfigMap: 6, Secret: 6, PersistentVolumeClaim: 6,
+  Node: 7,
+};
+const TIER_COUNT = 8;
+
+/* Default fallback icon (small box) */
+const fallbackIcon = KIND_ICON.Pod;
 
 export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opts = {}) {
   const { namespaceLanes = false, maskSecrets = false } = opts;
@@ -15,16 +35,21 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
     svg.selectAll("*").remove();
     const defs = svg.append("defs");
 
-    Object.entries(EDGE_COLORS).forEach(([t, c]) =>
-      defs.append("marker").attr("id", `arr-${t}`).attr("viewBox", "0 -5 10 10").attr("refX", 34).attr("refY", 0)
+    Object.entries(EDGE_COLORS).forEach(([t, c]) => {
+      const refX = t === "azure" ? 10 : 24;
+      defs.append("marker").attr("id", `arr-${t}`).attr("viewBox", "0 -5 10 10").attr("refX", refX).attr("refY", 0)
         .attr("markerWidth", 5).attr("markerHeight", 5).attr("orient", "auto")
-        .append("path").attr("d", "M0,-5L10,0L0,5").attr("fill", c).attr("opacity", 0.8)
-    );
+        .append("path").attr("d", "M0,-5L10,0L0,5").attr("fill", c).attr("opacity", 0.8);
+    });
     const glow = defs.append("filter").attr("id", "glow");
     glow.append("feGaussianBlur").attr("stdDeviation", "5").attr("result", "blur");
     const fm = glow.append("feMerge");
     fm.append("feMergeNode").attr("in", "blur");
     fm.append("feMergeNode").attr("in", "SourceGraphic");
+
+    // Drop shadow for icons
+    const shadow = defs.append("filter").attr("id", "iconShadow").attr("x", "-30%").attr("y", "-30%").attr("width", "160%").attr("height", "160%");
+    shadow.append("feDropShadow").attr("dx", 2).attr("dy", 4).attr("stdDeviation", 3).attr("flood-color", "rgba(0,0,0,0.4)");
 
     const g = svg.append("g");
     const zoom = d3.zoom().scaleExtent([0.05, 6]).on("zoom", e => g.attr("transform", e.transform));
@@ -35,82 +60,151 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
     const sE = edges.filter(e => nMap.has(e.source) && nMap.has(e.target)).map(e => ({ ...e }));
     const showName = d => (maskSecrets && d.kind === "Secret" ? "••••" : d.name);
 
-    const sim = d3.forceSimulation(sN)
-      .force("link", d3.forceLink(sE).id(d => d.id).distance(namespaceLanes ? 200 : 230).strength(0.4))
-      .force("charge", d3.forceManyBody().strength(-850))
-      .force("collide", d3.forceCollide(105));
+    const azureEdges = sE.filter(e => e.type === "azure");
+    const nonAzureEdges = sE.filter(e => e.type !== "azure");
+    const azureIds = new Set(sN.filter(n => n.kind === "AzureService").map(n => n.id));
 
-    if (namespaceLanes && sN.length) {
-      const nss = [...new Set(sN.map(n => n.namespace))].sort();
-      const nlen = Math.max(nss.length, 1);
-      sim.force("center", d3.forceCenter(W / 2, H / 2).strength(0.02))
-        .force("x", d3.forceX(W / 2).strength(0.06))
-        .force("y", d3.forceY(d => { const i = Math.max(0, nss.indexOf(d.namespace)); return ((i + 0.5) / nlen) * H; }).strength(0.26));
-    } else {
-      sim.force("center", d3.forceCenter(W / 2, H / 2))
-        .force("x", d3.forceX(W / 2).strength(0.04))
-        .force("y", d3.forceY(H / 2).strength(0.04));
+    // -- Tier-based layout --
+    const tierPad = 60;
+    const usableH = Math.max(H, TIER_COUNT * 120);
+    const tierY = tier => tierPad + ((tier + 0.5) / TIER_COUNT) * (usableH - tierPad * 2);
+
+    const tierBuckets = {};
+    sN.forEach(n => {
+      const t = KIND_TIER[n.kind] ?? 5;
+      (tierBuckets[t] = tierBuckets[t] || []).push(n);
+    });
+
+    for (const [tier, bucket] of Object.entries(tierBuckets)) {
+      const t = Number(tier);
+      const spacing = Math.min(200, (W - 100) / Math.max(bucket.length, 1));
+      const startX = W / 2 - ((bucket.length - 1) * spacing) / 2;
+      bucket.forEach((n, i) => {
+        n.x = startX + i * spacing;
+        n.y = tierY(t);
+        if (azureIds.has(n.id)) { n.fx = n.x; n.fy = n.y; }
+      });
     }
 
+    const sim = d3.forceSimulation(sN)
+      .force("link", d3.forceLink(sE).id(d => d.id).distance(120).strength(0.15))
+      .force("charge", d3.forceManyBody().strength(-400))
+      .force("collide", d3.forceCollide(70))
+      .force("x", d3.forceX(d => d.x).strength(0.12))
+      .force("y", d3.forceY(d => tierY(KIND_TIER[d.kind] ?? 5)).strength(0.7));
+
+    // ── Links ──
     const linkG = g.append("g");
-    const link = linkG.selectAll("line").data(sE).join("line")
+    const link = linkG.selectAll("line").data(nonAzureEdges).join("line")
       .attr("stroke", d => EDGE_COLORS[d.type] || "#555")
       .attr("stroke-width", d => { const sh = nodeHealthLevel(d.source, issues), th = nodeHealthLevel(d.target, issues); return (sh === "critical" || th === "critical") ? 2.5 : 1.5; })
       .attr("stroke-opacity", d => { const sh = nodeHealthLevel(d.source, issues), th = nodeHealthLevel(d.target, issues); return (sh === "critical" || th === "critical") ? 0.75 : 0.35; })
       .attr("stroke-dasharray", d => { const sh = nodeHealthLevel(d.source, issues), th = nodeHealthLevel(d.target, issues); return (sh === "critical" || th === "critical") ? "7,3" : null; })
       .attr("marker-end", d => `url(#arr-${d.type})`);
 
-    const linkLbl = linkG.selectAll("text").data(sE.filter(e => e.label || e.trafficLabel)).join("text")
-      .attr("text-anchor", "middle").attr("fill", d => d.trafficLabel && !d.label ? "#22D3EE" : "#A855F7").attr("font-size", "9px").attr("font-family", "monospace")
+    const azureLinkG = g.append("g");
+    const azureLink = azureLinkG.selectAll("path").data(azureEdges).join("path")
+      .attr("fill", "none")
+      .attr("stroke", EDGE_COLORS.azure)
+      .attr("stroke-width", 1.8)
+      .attr("stroke-opacity", 0.55)
+      .attr("marker-end", "url(#arr-azure)");
+
+    const allLabelEdges = sE.filter(e => e.label || e.trafficLabel);
+    const linkLbl = linkG.selectAll("text").data(allLabelEdges).join("text")
+      .attr("text-anchor", "middle").attr("fill", d => d.type === "azure" ? "#60A5FA" : (d.trafficLabel && !d.label ? "#22D3EE" : "#A855F7")).attr("font-size", "9px").attr("font-family", "monospace")
       .text(d => (d.label && d.trafficLabel) ? `${d.label} · ${d.trafficLabel}` : (d.label || d.trafficLabel || ""));
 
+    // ── Nodes ──
     const nodeG = g.append("g");
     const node = nodeG.selectAll("g").data(sN).join("g").style("cursor", "pointer")
       .call(d3.drag()
         .on("start", (ev, d) => { if (!ev.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
         .on("drag", (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
-        .on("end", (ev, d) => { if (!ev.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+        .on("end", (ev, d) => {
+          if (!ev.active) sim.alphaTarget(0);
+          if (azureIds.has(d.id)) { d.fx = ev.x; d.fy = ev.y; }
+          else { d.fx = null; d.fy = null; }
+        })
       )
       .on("click", (ev, d) => { ev.stopPropagation(); onSelect(d.id === selectedId ? null : d); });
 
-    // Glow ring
-    node.append("rect")
-      .attr("x", -NW / 2 - 6).attr("y", -NH / 2 - 6).attr("width", NW + 12).attr("height", NH + 12).attr("rx", 14)
+    const iconColor = d => KINDS[d.kind]?.color || "#94A3B8";
+
+    // Glow ring (health / selection)
+    node.append("circle")
+      .attr("r", 34)
       .attr("fill", "none")
-      .attr("stroke", d => { const h = nodeHealthLevel(d.id, issues); return d.id === selectedId ? (KINDS[d.kind]?.color || "#fff") : h === "ok" ? "transparent" : HEALTH_COLORS[h]; })
+      .attr("stroke", d => {
+        const h = nodeHealthLevel(d.id, issues);
+        return d.id === selectedId ? iconColor(d) : h === "ok" ? "transparent" : HEALTH_COLORS[h];
+      })
       .attr("stroke-width", 2).attr("stroke-opacity", 0.7)
-      .attr("filter", d => { const h = nodeHealthLevel(d.id, issues); return (h !== "ok" || d.id === selectedId) ? "url(#glow)" : "none"; });
+      .attr("filter", d => {
+        const h = nodeHealthLevel(d.id, issues);
+        return (h !== "ok" || d.id === selectedId) ? "url(#glow)" : "none";
+      });
 
-    // Card
-    node.append("rect")
-      .attr("x", -NW / 2).attr("y", -NH / 2).attr("width", NW).attr("height", NH).attr("rx", 10)
-      .attr("fill", "#0F172A")
-      .attr("stroke", d => { const h = nodeHealthLevel(d.id, issues); return h !== "ok" ? HEALTH_COLORS[h] : KINDS[d.kind]?.color || "#334"; })
-      .attr("stroke-width", d => { const h = nodeHealthLevel(d.id, issues); return h !== "ok" ? 2 : 1.2; });
+    // Isometric 3D icon shapes
+    node.each(function (d) {
+      const sel = d3.select(this);
+      const color = iconColor(d);
+      const shapes = KIND_ICON[d.kind] || fallbackIcon;
+      const iconG = sel.append("g").attr("filter", "url(#iconShadow)");
 
-    // Header tint
-    node.append("rect").attr("x", -NW / 2).attr("y", -NH / 2).attr("width", NW).attr("height", 26).attr("rx", 10)
-      .attr("fill", d => { const h = nodeHealthLevel(d.id, issues); return h !== "ok" ? HEALTH_COLORS[h] : KINDS[d.kind]?.color || "#555"; }).attr("opacity", 0.14);
-    node.append("rect").attr("x", -NW / 2).attr("y", -NH / 2 + 16).attr("width", NW).attr("height", 10)
-      .attr("fill", d => { const h = nodeHealthLevel(d.id, issues); return h !== "ok" ? HEALTH_COLORS[h] : KINDS[d.kind]?.color || "#555"; }).attr("opacity", 0.14);
+      shapes.forEach(s => {
+        const fc = faceColor(s.face, color);
+        const op = s.opacity || 1;
 
-    // Kind tag
-    node.append("text").attr("x", -NW / 2 + 10).attr("y", -NH / 2 + 17)
-      .attr("fill", d => KINDS[d.kind]?.color || "#94A3B8").attr("font-size", "10px").attr("font-weight", "bold").attr("font-family", "monospace")
+        if (s.t === "path") {
+          if (s.noFill) {
+            iconG.append("path").attr("d", s.d)
+              .attr("fill", "none").attr("stroke", fc).attr("stroke-width", 1).attr("opacity", op * 0.3);
+          } else {
+            iconG.append("path").attr("d", s.d)
+              .attr("fill", fc).attr("stroke", shadeHex(color, 0.25)).attr("stroke-width", 0.5).attr("opacity", op);
+          }
+        } else if (s.t === "line") {
+          iconG.append("line")
+            .attr("x1", s.x1).attr("y1", s.y1).attr("x2", s.x2).attr("y2", s.y2)
+            .attr("stroke", s.face === "accent" ? color : "rgba(255,255,255,0.2)")
+            .attr("stroke-width", s.strokeWidth || 1)
+            .attr("stroke-linecap", "round");
+        } else if (s.t === "circle") {
+          iconG.append("circle")
+            .attr("cx", s.cx).attr("cy", s.cy).attr("r", s.r)
+            .attr("fill", fc);
+        }
+      });
+    });
+
+    // Health dot (top-right of icon)
+    node.append("circle")
+      .attr("cx", 22).attr("cy", -30)
+      .attr("r", 5)
+      .attr("fill", d => {
+        const h = nodeHealthLevel(d.id, issues);
+        return h === "critical" ? "#EF4444" : h === "warning" ? "#F59E0B" : h === "info" ? "#60A5FA" : "#22C55E";
+      })
+      .attr("stroke", "#0F172A").attr("stroke-width", 1.5);
+
+    // Kind tag (above icon)
+    node.append("text")
+      .attr("y", -40).attr("text-anchor", "middle")
+      .attr("fill", d => KINDS[d.kind]?.color || "#94A3B8")
+      .attr("font-size", "9px").attr("font-weight", "bold").attr("font-family", "monospace")
       .text(d => KINDS[d.kind]?.tag || d.kind.slice(0, 3).toUpperCase());
 
-    // Health icon
-    node.append("text").attr("x", NW / 2 - 22).attr("y", -NH / 2 + 17).attr("font-size", "12px").attr("text-anchor", "middle")
-      .text(d => { const h = nodeHealthLevel(d.id, issues); return h === "critical" ? "🔴" : h === "warning" ? "🟡" : h === "info" ? "🔵" : "🟢"; });
-
-    // Name
-    node.append("text").attr("y", 5).attr("text-anchor", "middle")
-      .attr("fill", "#E2E8F0").attr("font-size", "12px").attr("font-weight", "600")
+    // Name (below icon)
+    node.append("text")
+      .attr("y", 30).attr("text-anchor", "middle")
+      .attr("fill", "#E2E8F0").attr("font-size", "11px").attr("font-weight", "600")
       .text(d => { const n = showName(d); return n.length > 21 ? n.slice(0, 20) + "…" : n; });
 
     // Status + metrics
-    node.append("text").attr("y", NH / 2 - 8).attr("text-anchor", "middle")
-      .attr("font-size", "10px").attr("font-family", "monospace")
+    node.append("text")
+      .attr("y", 42).attr("text-anchor", "middle")
+      .attr("font-size", "9px").attr("font-family", "monospace")
       .attr("fill", d => {
         const s = (d.status || "").toLowerCase();
         if (/run|ready|active|bound/.test(s)) return "#22C55E";
@@ -134,21 +228,36 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
 
     // Restart badge
     node.filter(d => d.restarts >= 3).append("rect")
-      .attr("x", NW / 2 - 40).attr("y", -NH / 2 + 22).attr("width", 37).attr("height", 16).attr("rx", 4)
+      .attr("x", 16).attr("y", -24).attr("width", 30).attr("height", 14).attr("rx", 4)
       .attr("fill", d => d.restarts >= 10 ? "#7F1D1D" : "#451A03");
     node.filter(d => d.restarts >= 3).append("text")
-      .attr("x", NW / 2 - 21).attr("y", -NH / 2 + 33).attr("text-anchor", "middle")
-      .attr("fill", d => d.restarts >= 10 ? "#FCA5A5" : "#FCD34D").attr("font-size", "9px").attr("font-weight", "bold").attr("font-family", "monospace")
+      .attr("x", 31).attr("y", -14).attr("text-anchor", "middle")
+      .attr("fill", d => d.restarts >= 10 ? "#FCA5A5" : "#FCD34D")
+      .attr("font-size", "9px").attr("font-weight", "bold").attr("font-family", "monospace")
       .text(d => `↺${d.restarts}`);
 
     // Namespace label
-    node.append("text").attr("y", NH / 2 + 13).attr("text-anchor", "middle")
-      .attr("fill", "#334155").attr("font-size", "9px").text(d => d.namespace);
+    node.append("text")
+      .attr("y", 52).attr("text-anchor", "middle")
+      .attr("fill", "#334155").attr("font-size", "8px")
+      .text(d => d.namespace);
 
     svg.on("click", () => onSelect(null));
     sim.on("tick", () => {
       link.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
-      linkLbl.attr("x", d => (d.source.x + d.target.x) / 2).attr("y", d => (d.source.y + d.target.y) / 2 - 5);
+      azureLink.attr("d", d => {
+        const sx = d.source.x, sy = d.source.y;
+        const tx = d.target.x, ty = d.target.y;
+        const midY = sy + (ty - sy) * 0.35;
+        return `M${sx},${sy} L${sx},${midY} L${tx},${midY} L${tx},${ty}`;
+      });
+      linkLbl.attr("x", d => (d.source.x + d.target.x) / 2).attr("y", d => {
+        if (d.type === "azure") {
+          const midY = d.source.y + (d.target.y - d.source.y) * 0.35;
+          return midY - 5;
+        }
+        return (d.source.y + d.target.y) / 2 - 5;
+      });
       node.attr("transform", d => `translate(${d.x},${d.y})`);
     });
     sim.on("end", () => {
