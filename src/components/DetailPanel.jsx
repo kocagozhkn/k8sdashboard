@@ -1,4 +1,4 @@
-import { KINDS, HEALTH_COLORS, KUBECTL_PLURAL } from "../constants/theme.js";
+import { KINDS, EDGE_COLORS, HEALTH_COLORS, KUBECTL_PLURAL } from "../constants/theme.js";
 import { nodeHealthLevel } from "../utils/health.js";
 import { formatCpuRequestMilli, formatMemoryMi } from "../utils/kubectl.js";
 import { formatShortRps } from "../utils/mesh-prometheus.js";
@@ -235,7 +235,7 @@ export function DetailPanel({
                       background: oh === "critical" ? "#1C0505" : oh === "warning" ? "#1C1005" : "#0F172A",
                       border: `1px solid ${oh !== "ok" ? HEALTH_COLORS[oh] + "44" : "transparent"}`,
                     }}>
-                    <span style={{ color: KINDS[e.type] ? KINDS[e.type].color : "#A855F7", fontSize: 11 }}>{isOut ? "→" : "←"}</span>
+                    <span style={{ color: EDGE_COLORS[e.type] || "#A855F7", fontSize: 11 }}>{isOut ? "→" : "←"}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 11, color: "#E2E8F0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{showName(other)}</div>
                       <div style={{ fontSize: 9, color: "#475569" }}>{e.type}{e.label ? ` · ${e.label}` : ""}</div>

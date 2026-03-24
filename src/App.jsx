@@ -204,8 +204,9 @@ export default function App() {
   const selectedAzureDeps = useMemo(() => {
     const current = detailNode || selected;
     if (!current) return [];
-    return graphWithTraffic.edges.filter(e => e.source === current.id && e.type === "azure").map(e => graphWithTraffic.nodes.find(n => n.id === e.target)).filter(Boolean);
-  }, [detailNode, selected, graphWithTraffic]);
+    // Use unfiltered graphData so Azure deps show even when AzureService nodes are filtered out of the graph view
+    return (graphData?.edges || []).filter(e => e.source === current.id && e.type === "azure").map(e => (graphData?.nodes || []).find(n => n.id === e.target)).filter(Boolean);
+  }, [detailNode, selected, graphData]);
 
   useEffect(() => { if (!selected) return; if (filtered.nodes.some(n => n.id === selected.id)) return; setSelected(null); }, [filtered, selected]);
   useEffect(() => { if (meshProfile === "off") { setMeshStats(null); setMeshErr(""); setMeshAutoResolved(null); } }, [meshProfile]);
