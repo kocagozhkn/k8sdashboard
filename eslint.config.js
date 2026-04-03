@@ -32,6 +32,6 @@ export default [
     },
   },
   {
-    ignores: ["dist/", "node_modules/", "platform/", ".gocache/"],
+    ignores: ["dist/", "node_modules/", "platform/", ".gocache/", "server/"],
   },
 ];

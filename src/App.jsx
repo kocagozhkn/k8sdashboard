@@ -20,6 +20,8 @@ import { useGraph } from "./hooks/useGraph.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { Sidebar } from "./components/Sidebar.jsx";
 import { DetailPanel } from "./components/DetailPanel.jsx";
+import { AuthScreen } from "./components/AuthScreen.jsx";
+import { loadAuthStatus, loginWithCredentials, signupAccount, logoutAuth } from "./utils/simpleAuth.js";
 
 function prometheusUrlInitial() {
   if (typeof window === "undefined") return "";
@@ -93,6 +95,15 @@ export default function App() {
   const [meshErr, setMeshErr] = useState("");
   const [meshLoading, setMeshLoading] = useState(false);
   const [meshFetchedAt, setMeshFetchedAt] = useState(null);
+  const [authState, setAuthState] = useState({
+    ready: false,
+    required: false,
+    authenticated: false,
+    hasUsers: true,
+    allowSignup: false,
+    defaultTab: "login",
+  });
+  const [loginErr, setLoginErr] = useState("");
   const [rightPanelWidth, setRightPanelWidth] = useState(() => {
     if (typeof window === "undefined") return 278;
     try {
@@ -108,6 +119,12 @@ export default function App() {
   const fileInputRef = useRef(null);
   const svgRef = useRef(null);
   const searchInputRef = useRef(null);
+
+  useEffect(() => {
+    void loadAuthStatus().then(({ required, authenticated, hasUsers, allowSignup, defaultTab }) =>
+      setAuthState({ ready: true, required, authenticated, hasUsers, allowSignup, defaultTab }),
+    );
+  }, []);
 
   // ── Kubeconfig persistence ──
   useEffect(() => {
@@ -304,6 +321,8 @@ export default function App() {
 
   // ── Auto-connect in-cluster ──
   useEffect(() => {
+    if (!authState.ready) return;
+    if (authState.required && !authState.authenticated) return;
     if (!isUiServedViaTopologyPod()) { setInClusterBootstrap(false); return; }
     if (autoConnectDoneRef.current) return;
     autoConnectDoneRef.current = true;
@@ -312,7 +331,7 @@ export default function App() {
     const internalId = CLUSTER_PRESETS.find(p => p.id === "cortex-internal-aks")?.id;
     if (internalId) setClusterPresetId(internalId);
     (async () => { try { await fetchAPI(base, { headers: {} }); } finally { setInClusterBootstrap(false); } })();
-  }, [fetchAPI]);
+  }, [fetchAPI, authState.ready, authState.required, authState.authenticated]);
 
   const toggleKind = k => setTypeFilters(prev => { const s = new Set(prev); s.has(k) ? s.delete(k) : s.add(k); return s; });
   const selectAllKinds = () => setTypeFilters(new Set(Object.keys(KINDS)));
@@ -326,6 +345,39 @@ export default function App() {
   });
 
   // ── Screens ──
+  const authRequired = authState.ready && authState.required;
+
+  if (!authState.ready) return (
+    <div style={{ background: "#020817", minHeight: "100vh", color: "#E2E8F0", fontFamily: "system-ui,sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, padding: 24 }}>
+      <div style={{ width: 40, height: 40, border: "3px solid #1E293B", borderTopColor: "#6366F1", borderRadius: "50%", animation: "k8s-spin .8s linear infinite" }} />
+      <style>{`@keyframes k8s-spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{ fontSize: 14, color: "#64748B" }}>Yükleniyor…</div>
+    </div>
+  );
+
+  if (authRequired && !authState.authenticated) {
+    return (
+      <AuthScreen
+        defaultTab={authState.defaultTab}
+        allowSignup={authState.allowSignup}
+        hasUsers={authState.hasUsers}
+        error={loginErr}
+        onLogin={async (u, pw) => {
+          setLoginErr("");
+          const r = await loginWithCredentials(u, pw);
+          if (r.ok) setAuthState(prev => ({ ...prev, authenticated: true, hasUsers: true }));
+          else setLoginErr(r.error || "Giriş başarısız.");
+        }}
+        onSignup={async (u, pw, c) => {
+          setLoginErr("");
+          const r = await signupAccount(u, pw, c);
+          if (r.ok) setAuthState(prev => ({ ...prev, authenticated: true, hasUsers: true }));
+          else setLoginErr(r.error || "Kayıt başarısız.");
+        }}
+      />
+    );
+  }
+
   if (inClusterBootstrap) return (
     <div style={{ background: "#020817", minHeight: "100vh", color: "#E2E8F0", fontFamily: "system-ui,sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, padding: 24 }}>
       <div style={{ width: 40, height: 40, border: "3px solid #1E293B", borderTopColor: "#6366F1", borderRadius: "50%", animation: "k8s-spin .8s linear infinite" }} />
@@ -478,6 +530,17 @@ export default function App() {
           {/* Toolbar row 1 */}
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             {ghostBtn("← Menü", () => { setScreen("home"); setSelected(null); })}
+            {authRequired ? ghostBtn("Çıkış", () => {
+              void (async () => {
+                await logoutAuth();
+                autoConnectDoneRef.current = false;
+                if (isUiServedViaTopologyPod()) setInClusterBootstrap(true);
+                setAuthState(prev => ({ ...prev, authenticated: false }));
+                setScreen("home");
+                setGraphData(null);
+                setSelected(null);
+              })();
+            }) : null}
             {ghostBtn("📋 Yeni", () => setScreen("input"))}
             {ghostBtn(loading ? "…" : "Yenile (r)", () => fetchAPI())}
             <select value={String(refreshIntervalSec)} onChange={e => setRefreshIntervalSec(Number(e.target.value))} style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer" }}>

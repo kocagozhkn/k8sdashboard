@@ -4,6 +4,7 @@ dist/
 *.log
 .env
 .env.local
+/data/
 
 # AI agent folders
 .cursor/

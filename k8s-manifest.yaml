@@ -105,15 +105,23 @@ spec:
             # Prometheus Service DNS (port dahil). AKS azure-extensions-usage-system: svc adını kubectl get svc -n … ile doğrulayın
             - name: PROMETHEUS_UPSTREAM
               value: "prometheus.azure-extensions-usage-system.svc.cluster.local:9090"
+            # SQLite kullanıcılar (/app/data/auth.db). SESSION_SECRET zorunlu; ALLOW_SIGNUP=0 ile yalnızca mevcut kullanıcılar.
+            # - name: SESSION_SECRET
+            #   valueFrom: { secretKeyRef: { name: k8s-topology-auth, key: session } }
+            # - name: ALLOW_SIGNUP
+            #   value: "0"
+          volumeMounts:
+            - name: auth-db
+              mountPath: /app/data
           ports:
             - containerPort: 80
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 128Mi
             limits:
               cpu: 200m
-              memory: 128Mi
+              memory: 256Mi
         - name: kubectl-proxy
           image: rancher/kubectl:v1.33.3
           args:
@@ -129,6 +137,9 @@ spec:
             limits:
               cpu: 200m
               memory: 256Mi
+      volumes:
+        - name: auth-db
+          emptyDir: {}
 
 ---
 apiVersion: v1
