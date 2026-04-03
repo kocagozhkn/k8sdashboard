@@ -63,35 +63,73 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
     const azureEdges = sE.filter(e => e.type === "azure");
     const nonAzureEdges = sE.filter(e => e.type !== "azure");
     const azureIds = new Set(sN.filter(n => n.kind === "AzureService").map(n => n.id));
+    const azureList = sN.filter(n => azureIds.has(n.id));
+    const AZURE_COL_X = 92;
+    const MAIN_SHIFT_X = azureList.length > 0 ? 130 : 0;
 
-    // -- Tier-based layout --
-    const tierPad = 60;
-    const usableH = Math.max(H, TIER_COUNT * 120);
+    const tierPad = 64;
+    const usableH = Math.max(H, TIER_COUNT * 96);
     const tierY = tier => tierPad + ((tier + 0.5) / TIER_COUNT) * (usableH - tierPad * 2);
+
+    const nss = [...new Set(sN.map(n => n.namespace))].sort();
+    const nNs = Math.max(nss.length, 1);
+    const laneY = ns => {
+      const i = Math.max(0, nss.indexOf(ns));
+      return tierPad + ((i + 0.5) / nNs) * (H - tierPad * 2);
+    };
 
     const tierBuckets = {};
     sN.forEach(n => {
+      if (azureIds.has(n.id)) return;
       const t = KIND_TIER[n.kind] ?? 5;
       (tierBuckets[t] = tierBuckets[t] || []).push(n);
     });
 
     for (const [tier, bucket] of Object.entries(tierBuckets)) {
       const t = Number(tier);
-      const spacing = Math.min(200, (W - 100) / Math.max(bucket.length, 1));
-      const startX = W / 2 - ((bucket.length - 1) * spacing) / 2;
+      const ncol = Math.max(bucket.length, 1);
+      const availW = W - MAIN_SHIFT_X - 80;
+      const spacing = Math.min(210, Math.max(88, availW / ncol));
+      const startX = MAIN_SHIFT_X + (W - MAIN_SHIFT_X) / 2 - ((ncol - 1) * spacing) / 2;
       bucket.forEach((n, i) => {
         n.x = startX + i * spacing;
-        n.y = tierY(t);
-        if (azureIds.has(n.id)) { n.fx = n.x; n.fy = n.y; }
+        n.y = namespaceLanes ? laneY(n.namespace) : tierY(t);
       });
     }
 
+    const rowsAz = Math.max(azureList.length, 1);
+    const slotAz = Math.min(88, Math.max(56, (H - tierPad * 2) / Math.min(rowsAz, 14)));
+    azureList.forEach((n, i) => {
+      n.x = AZURE_COL_X;
+      n.y = tierPad + (i + 0.5) * slotAz;
+    });
+
+    const linkDistance = e => {
+      if (e.type === "azure") return Math.min(260, 140 + W * 0.12);
+      if (e.type === "hosts") return 95;
+      if (e.type === "selects" || e.type === "owns") return 105;
+      if (e.type === "routes") return 115;
+      return 128;
+    };
+
+    const chargeStr = -(280 + Math.min(sN.length * 12, 2600));
+
     const sim = d3.forceSimulation(sN)
-      .force("link", d3.forceLink(sE).id(d => d.id).distance(120).strength(0.15))
-      .force("charge", d3.forceManyBody().strength(-400))
-      .force("collide", d3.forceCollide(70))
-      .force("x", d3.forceX(d => d.x).strength(0.12))
-      .force("y", d3.forceY(d => tierY(KIND_TIER[d.kind] ?? 5)).strength(0.7));
+      .velocityDecay(0.38)
+      .alphaDecay(0.028)
+      .force("link", d3.forceLink(sE).id(d => d.id).distance(linkDistance).strength(0.2))
+      .force("charge", d3.forceManyBody().strength(chargeStr))
+      .force("collide", d3.forceCollide(78));
+
+    if (namespaceLanes) {
+      sim
+        .force("y", d3.forceY(d => laneY(d.namespace)).strength(0.48))
+        .force("x", d3.forceX(d => (azureIds.has(d.id) ? AZURE_COL_X + 40 : MAIN_SHIFT_X + (W - MAIN_SHIFT_X) / 2)).strength(d => (azureIds.has(d.id) ? 0.32 : 0.07)));
+    } else {
+      sim
+        .force("y", d3.forceY(d => (azureIds.has(d.id) ? d.y : tierY(KIND_TIER[d.kind] ?? 5))).strength(d => (azureIds.has(d.id) ? 0.25 : 0.68)))
+        .force("x", d3.forceX(d => (azureIds.has(d.id) ? AZURE_COL_X : d.x)).strength(d => (azureIds.has(d.id) ? 0.42 : 0.11)));
+    }
 
     // ── Links ──
     const linkG = g.append("g");
@@ -119,12 +157,12 @@ export function useGraph(svgRef, nodes, edges, issues, selectedId, onSelect, opt
     const nodeG = g.append("g");
     const node = nodeG.selectAll("g").data(sN).join("g").style("cursor", "pointer")
       .call(d3.drag()
-        .on("start", (ev, d) => { if (!ev.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on("start", (ev, d) => { if (!ev.active) sim.alphaTarget(0.35).restart(); d.fx = d.x; d.fy = d.y; })
         .on("drag", (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
         .on("end", (ev, d) => {
           if (!ev.active) sim.alphaTarget(0);
-          if (azureIds.has(d.id)) { d.fx = ev.x; d.fy = ev.y; }
-          else { d.fx = null; d.fy = null; }
+          d.fx = null;
+          d.fy = null;
         })
       )
       .on("click", (ev, d) => { ev.stopPropagation(); onSelect(d.id === selectedId ? null : d); });

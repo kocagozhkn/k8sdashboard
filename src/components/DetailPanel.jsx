@@ -129,6 +129,7 @@ export function DetailPanel({
             <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Azure servis bilgisi</div>
             <div style={{ fontSize: 11, color: "#CBD5E1", lineHeight: 1.5 }}>
               <div>Tür: {selected.azureServiceType || "Azure Service"}</div>
+              {selected.azureRawName && <div>Kaynak: {selected.azureRawName}</div>}
               <div>Güven: <span style={{ color: selected.azureConfidence === "confirmed" ? "#86EFAC" : "#FCD34D" }}>{selected.azureConfidence === "confirmed" ? "Confirmed" : "Inferred"}</span></div>
               <div>Kanıt: {selected.azureEvidence || "metadata"}</div>
             </div>

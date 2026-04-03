@@ -59,7 +59,6 @@ export function azureDepsFromEnv(envList = []) {
       pushAzureDep(deps, { serviceType: "Azure (ConfigMap)", name: vc.key ? `${vc.name}/${vc.key}` : vc.name, confidence: "inferred", evidence: `configMapKeyRef:${key || vc.key || "?"}` });
     }
     if (!hay.trim()) continue;
-    if (value.includes(".azurecr.io")) pushAzureDep(deps, { serviceType: "ACR", name: value.match(/[a-z0-9]+\.azurecr\.io/i)?.[0] || value, confidence: "confirmed", evidence: `env:${key}` });
     if (hay.includes("vault.azure.net") || hay.includes("keyvault")) pushAzureDep(deps, { serviceType: "Key Vault", name: value.match(/[a-z0-9-]+\.vault\.azure\.net/i)?.[0] || key, confidence: value.includes("vault.azure.net") ? "confirmed" : "inferred", evidence: `env:${key}` });
     if (hay.includes("servicebus.windows.net")) pushAzureDep(deps, { serviceType: "Service Bus", name: value.match(/[a-z0-9-]+\.servicebus\.windows\.net/i)?.[0] || key, confidence: "confirmed", evidence: `env:${key}` });
     if (hay.includes("eventhub") || hay.includes("servicebus.windows.net")) pushAzureDep(deps, { serviceType: "Event Hubs", name: value.match(/[a-z0-9-]+\.servicebus\.windows\.net/i)?.[0] || key, confidence: hay.includes("eventhub") ? "inferred" : "confirmed", evidence: `env:${key}` });
@@ -74,9 +73,6 @@ export function azureDepsFromEnv(envList = []) {
 export function azureDepsFromPodSpec(deps, podSpec) {
   if (!podSpec) return;
   for (const c of [...(podSpec.containers || []), ...(podSpec.initContainers || [])]) {
-    if ((c.image || "").includes(".azurecr.io")) {
-      pushAzureDep(deps, { serviceType: "ACR", name: c.image.match(/[a-z0-9]+\.azurecr\.io/i)?.[0] || c.image, confidence: "confirmed", evidence: `image:${c.name}` });
-    }
     deps.push(...azureDepsFromEnvFromList(c.envFrom || []));
     deps.push(...azureDepsFromEnv(c.env || []));
   }
@@ -149,12 +145,13 @@ export function buildAzureDependencyGraph(rawItems) {
       if (!seenNodes.has(azureId)) {
         seenNodes.add(azureId);
         azureNodes.push({
-          id: azureId, kind: "AzureService", name: dep.name, namespace: "azure",
+          id: azureId, kind: "AzureService", name: dep.serviceType, namespace: "azure",
+          azureRawName: dep.name,
           status: dep.confidence === "confirmed" ? "Confirmed" : "Inferred",
           azureServiceType: dep.serviceType, azureConfidence: dep.confidence, azureEvidence: dep.evidence,
         });
       }
-      azureEdges.push({ id: `azure-e${eid++}`, source: item._id, target: azureId, type: "azure", label: dep.serviceType });
+      azureEdges.push({ id: `azure-e${eid++}`, source: item._id, target: azureId, type: "azure" });
     }
   }
   return { nodes: azureNodes, edges: azureEdges };
@@ -200,7 +197,7 @@ export function augmentAzureEdgesToPods(rawItems, edges) {
       const key = `${pod._id}|${ae.target}|azure`;
       if (seenPair.has(key)) continue;
       seenPair.add(key);
-      extra.push({ id: `azure-pod-${seq++}`, source: pod._id, target: ae.target, type: "azure", label: ae.label });
+      extra.push({ id: `azure-pod-${seq++}`, source: pod._id, target: ae.target, type: "azure" });
     }
   }
   return extra.length ? [...edges, ...extra] : edges;

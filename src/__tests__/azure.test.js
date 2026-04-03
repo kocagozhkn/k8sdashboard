@@ -11,9 +11,9 @@ describe("envNameSuggestsAzure", () => {
 });
 
 describe("azureDepsFromEnv", () => {
-  it("detects ACR from env value", () => {
+  it("skips ACR from env value (ACR excluded)", () => {
     const deps = azureDepsFromEnv([{ name: "REGISTRY", value: "myacr.azurecr.io/app:v1" }]);
-    expect(deps.some(d => d.serviceType === "ACR")).toBe(true);
+    expect(deps.some(d => d.serviceType === "ACR")).toBe(false);
   });
 
   it("detects Key Vault from env value", () => {
@@ -58,13 +58,13 @@ describe("azureDepsFromItem", () => {
     expect(deps.some(d => d.serviceType === "Azure Files")).toBe(true);
   });
 
-  it("detects ACR from container image", () => {
+  it("skips ACR from container image (ACR excluded)", () => {
     const item = {
       kind: "Pod",
       metadata: { labels: {}, annotations: {} },
       spec: { containers: [{ name: "app", image: "myacr.azurecr.io/app:latest", env: [] }] },
     };
     const deps = azureDepsFromItem(item);
-    expect(deps.some(d => d.serviceType === "ACR")).toBe(true);
+    expect(deps.some(d => d.serviceType === "ACR")).toBe(false);
   });
 });
