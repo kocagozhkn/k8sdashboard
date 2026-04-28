@@ -13,9 +13,14 @@ export function downloadTextFile(filename, contents, mimeType) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+export function buildTopologySvgString(svgEl) {
+  if (!svgEl) return "";
+  return new XMLSerializer().serializeToString(svgEl);
+}
+
 export function exportTopologySvg(svgEl) {
   if (!svgEl) return;
-  const ser = new XMLSerializer().serializeToString(svgEl);
+  const ser = buildTopologySvgString(svgEl);
   downloadTextFile(
     `k8s-topology-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.svg`,
     ser,
@@ -23,7 +28,7 @@ export function exportTopologySvg(svgEl) {
   );
 }
 
-export function exportTableCsv(nodes, issues, nodeHealthLevel, maskSecrets) {
+export function buildTableCsv(nodes, issues, nodeHealthLevel, maskSecrets) {
   const rows = nodes.map(n => [
     n.kind,
     maskSecrets && n.kind === "Secret" ? "••••" : n.name,
@@ -34,10 +39,14 @@ export function exportTableCsv(nodes, issues, nodeHealthLevel, maskSecrets) {
     n.cpuPercent != null ? `${n.cpuPercent}` : "",
     n.memPercent != null ? `${n.memPercent}` : "",
   ].map(toCsvValue).join(","));
-  const csv = [
+  return [
     "kind,name,namespace,status,health,restarts,cpu_percent,memory_percent",
     ...rows,
   ].join("\n");
+}
+
+export function exportTableCsv(nodes, issues, nodeHealthLevel, maskSecrets) {
+  const csv = buildTableCsv(nodes, issues, nodeHealthLevel, maskSecrets);
   downloadTextFile(
     `k8s-topology-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.csv`,
     csv,

@@ -5,6 +5,9 @@ export function analyzeHealth(nodes, edges) {
     const r = n.restarts || 0;
     const cpu = n.cpuPercent || 0;
     const mem = n.memPercent || 0;
+    const res = n.resources;
+    const usedCpuMilli = n.metricsCpuMilli;
+    const pol = n.policy;
 
     if (n.kind === "Pod") {
       if (s === "oomkilled")        issues.push({ id: n.id, level: "critical", code: "OOMKilled",      msg: `${n.name} bellek yetersizliğinden öldürüldü`,     fix: "Memory limit artırın veya memory leak araştırın" });
@@ -19,6 +22,29 @@ export function analyzeHealth(nodes, edges) {
       else if (cpu > 70)           issues.push({ id: n.id, level: "warning",  code: "ElevatedCPU",    msg: `${n.name} CPU %${cpu} kullanıyor`,                fix: "CPU kullanımını izlemeye devam edin" });
       if (mem > 90)                 issues.push({ id: n.id, level: "critical", code: "HighMemory",     msg: `${n.name} Memory %${mem} kullanıyor`,             fix: "Memory limit artırın veya memory leak araştırın" });
       else if (mem > 75)           issues.push({ id: n.id, level: "warning",  code: "ElevatedMemory", msg: `${n.name} Memory %${mem} kullanıyor`,             fix: "Bellek tüketimini izleyin" });
+
+      if (res) {
+        if (res.reqCpuMilli == null || res.reqMemMi == null) {
+          issues.push({ id: n.id, level: "warning", code: "MissingRequests", msg: `${n.name} resource request tanımsız`, fix: "CPU/Memory requests ekleyin (scheduler stabilitesi için)" });
+        }
+        if (res.limCpuMilli == null || res.limMemMi == null) {
+          issues.push({ id: n.id, level: "info", code: "MissingLimits", msg: `${n.name} resource limit tanımsız`, fix: "CPU/Memory limits ekleyin (noisy neighbor riskini azaltır)" });
+        }
+        if (usedCpuMilli != null && res.reqCpuMilli != null && res.reqCpuMilli >= 200) {
+          const pct = Math.round((usedCpuMilli / Math.max(1, res.reqCpuMilli)) * 100);
+          if (pct <= 20) issues.push({ id: n.id, level: "info", code: "OverProvisionCPU", msg: `${n.name} CPU request'ine göre düşük kullanım (~%${pct})`, fix: "Requests düşürüp cluster verimliliğini artırın" });
+        }
+      }
+
+      if (pol) {
+        if (pol.anyPrivileged) issues.push({ id: n.id, level: "critical", code: "Privileged", msg: `${n.name} privileged container içeriyor`, fix: "privileged=false kullanın; capability/minimal izin modeline geçin" });
+        if (pol.anyAllowPrivEsc) issues.push({ id: n.id, level: "warning", code: "PrivEsc", msg: `${n.name} allowPrivilegeEscalation=true`, fix: "allowPrivilegeEscalation=false önerilir" });
+        if (pol.anyHostPath) issues.push({ id: n.id, level: "warning", code: "HostPath", msg: `${n.name} hostPath volume kullanıyor`, fix: "Mümkünse PVC/ConfigMap/Secret kullanın" });
+        if (pol.hostNetwork || pol.hostPID || pol.hostIPC) issues.push({ id: n.id, level: "warning", code: "HostNS", msg: `${n.name} host namespace kullanıyor`, fix: "hostNetwork/hostPID/hostIPC kapatın" });
+        if (pol.anyRunAsRoot) issues.push({ id: n.id, level: "info", code: "RunAsRoot", msg: `${n.name} root olarak çalışabilir`, fix: "runAsNonRoot: true ve non-root user kullanın" });
+        if (pol.anyReadOnlyFsFalse) issues.push({ id: n.id, level: "info", code: "WritableFS", msg: `${n.name} readOnlyRootFilesystem=false`, fix: "readOnlyRootFilesystem=true önerilir" });
+        if (pol.missingProbes) issues.push({ id: n.id, level: "info", code: "MissingProbes", msg: `${n.name} probe tanımsız`, fix: "readiness/liveness (ve gerekirse startup) probe ekleyin" });
+      }
     }
 
     if (n.kind === "Node") {
@@ -36,6 +62,24 @@ export function analyzeHealth(nodes, edges) {
           if (desired > 0 && ready === 0)  issues.push({ id: n.id, level: "critical", code: "NotReady",    msg: `${n.name}: hiç pod hazır değil (0/${desired})`,     fix: "kubectl describe deployment ile event'lere bakın" });
           else if (ready < desired)        issues.push({ id: n.id, level: "warning",  code: "PartialReady", msg: `${n.name}: ${ready}/${desired} pod hazır`,         fix: "Kısmi hazır — pod event'lerini kontrol edin" });
         }
+      }
+      if (res) {
+        if (res.reqCpuMilli == null || res.reqMemMi == null) {
+          issues.push({ id: n.id, level: "warning", code: "MissingRequests", msg: `${n.name} request tanımsız`, fix: "Template container requests ekleyin" });
+        }
+        if (res.limCpuMilli == null || res.limMemMi == null) {
+          issues.push({ id: n.id, level: "info", code: "MissingLimits", msg: `${n.name} limit tanımsız`, fix: "Template container limits ekleyin" });
+        }
+      }
+
+      if (pol) {
+        if (pol.anyPrivileged) issues.push({ id: n.id, level: "critical", code: "Privileged", msg: `${n.name} template privileged container içeriyor`, fix: "privileged=false kullanın" });
+        if (pol.anyAllowPrivEsc) issues.push({ id: n.id, level: "warning", code: "PrivEsc", msg: `${n.name} template allowPrivilegeEscalation=true`, fix: "allowPrivilegeEscalation=false önerilir" });
+        if (pol.anyHostPath) issues.push({ id: n.id, level: "warning", code: "HostPath", msg: `${n.name} template hostPath volume kullanıyor`, fix: "PVC/ConfigMap/Secret tercih edin" });
+        if (pol.hostNetwork || pol.hostPID || pol.hostIPC) issues.push({ id: n.id, level: "warning", code: "HostNS", msg: `${n.name} template host namespace kullanıyor`, fix: "hostNetwork/hostPID/hostIPC kapatın" });
+        if (pol.anyRunAsRoot) issues.push({ id: n.id, level: "info", code: "RunAsRoot", msg: `${n.name} template root çalışabilir`, fix: "runAsNonRoot: true kullanın" });
+        if (pol.anyReadOnlyFsFalse) issues.push({ id: n.id, level: "info", code: "WritableFS", msg: `${n.name} template readOnlyRootFilesystem=false`, fix: "readOnlyRootFilesystem=true önerilir" });
+        if (pol.missingProbes) issues.push({ id: n.id, level: "info", code: "MissingProbes", msg: `${n.name} template probe tanımsız`, fix: "readiness/liveness (ve gerekirse startup) ekleyin" });
       }
     }
 

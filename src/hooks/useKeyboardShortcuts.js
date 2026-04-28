@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-export function useKeyboardShortcuts({ onEscape, onSearch, onRefresh }) {
+export function useKeyboardShortcuts({ onEscape, onSearch, onRefresh, onCommandPalette }) {
   useEffect(() => {
     function handler(e) {
       const tag = (e.target?.tagName || "").toLowerCase();
@@ -16,6 +16,12 @@ export function useKeyboardShortcuts({ onEscape, onSearch, onRefresh }) {
 
       if (isInput) return;
 
+      if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        onCommandPalette?.();
+        return;
+      }
+
       if (e.key === "/" || e.key === "f" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         onSearch?.();
@@ -29,5 +35,5 @@ export function useKeyboardShortcuts({ onEscape, onSearch, onRefresh }) {
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onEscape, onSearch, onRefresh]);
+  }, [onEscape, onSearch, onRefresh, onCommandPalette]);
 }

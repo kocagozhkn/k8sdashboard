@@ -139,7 +139,8 @@ spec:
               memory: 256Mi
       volumes:
         - name: auth-db
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: k8s-topology-auth-db
 
 ---
 apiVersion: v1
@@ -161,3 +162,15 @@ spec:
       port: 80
       targetPort: 80
       protocol: TCP
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-topology-auth-db
+  namespace: topology
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

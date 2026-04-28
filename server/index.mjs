@@ -6,7 +6,28 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import bcrypt from "bcryptjs";
-import { openAuthDb, userCount, findUserByUsername, findUserById, insertUser } from "./db.mjs";
+import crypto from "node:crypto";
+import {
+  openAuthDb,
+  userCount,
+  findUserByUsername,
+  findUserById,
+  insertUser,
+  writeAudit,
+  listAudit,
+  upsertView,
+  listViews,
+  deleteView,
+  createSnapshot,
+  listSnapshots,
+  getSnapshot,
+  getSharedSnapshot,
+  setSnapshotShareId,
+  listUsers,
+  setUserRole,
+  setUserDisabled,
+  setUserPasswordHash,
+} from "./db.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, "..");
@@ -54,10 +75,39 @@ function authMePayload(req) {
   return {
     required: true,
     authenticated: Boolean(req.user),
+    username: req.user?.username || null,
+    role: req.user?.role || null,
     hasUsers: pol.hasUsers,
     allowSignup: pol.allowSignup,
     defaultTab: pol.defaultTab,
   };
+}
+
+function reqIp(req) {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.trim()) return xf.split(",")[0].trim();
+  return req.socket?.remoteAddress || null;
+}
+
+function requireAuth(req, res, next) {
+  if (AUTH_DISABLED || !db) return next();
+  if (req.user) return next();
+  return res.status(401).json({ message: "Giriş gerekli" });
+}
+
+function requireAdmin(req, res, next) {
+  if (AUTH_DISABLED || !db) return next();
+  if (!req.user) return res.status(401).json({ message: "Giriş gerekli" });
+  if (req.user.role === "admin") return next();
+  return res.status(403).json({ message: "Admin yetkisi gerekli" });
+}
+
+function safeJsonParse(s, fallback) {
+  try {
+    return JSON.parse(String(s || ""));
+  } catch {
+    return fallback;
+  }
 }
 
 const app = express();
@@ -89,7 +139,8 @@ passport.deserializeUser((id, done) => {
   try {
     const row = findUserById(db, id);
     if (!row) return done(null, false);
-    return done(null, { id: String(row.id), username: row.username });
+    if (Number(row.disabled || 0) === 1) return done(null, false);
+    return done(null, { id: String(row.id), username: row.username, role: row.role || "viewer" });
   } catch (e) {
     return done(e);
   }
@@ -100,10 +151,11 @@ if (db) {
     new LocalStrategy({ usernameField: "username", passwordField: "password" }, (username, password, done) => {
       try {
         const row = findUserByUsername(db, username);
+        if (row && Number(row.disabled || 0) === 1) return done(null, false, { message: "Kullanıcı devre dışı" });
         if (!row || !bcrypt.compareSync(password, row.password_hash)) {
           return done(null, false, { message: "Kullanıcı adı veya parola hatalı" });
         }
-        return done(null, { id: String(row.id), username: row.username });
+        return done(null, { id: String(row.id), username: row.username, role: row.role || "viewer" });
       } catch (e) {
         return done(e);
       }
@@ -135,9 +187,12 @@ app.post("/api/auth/signup", (req, res, next) => {
 
   try {
     const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
-    const user = insertUser(db, username, hash);
+    const isFirst = userCount(db) === 0;
+    const role = isFirst ? "admin" : "viewer";
+    const user = insertUser(db, username, hash, role);
     req.login(user, err => {
       if (err) return next(err);
+      writeAudit(db, { userId: user.id, action: "auth.signup", meta: { username: user.username, role: user.role }, ip: reqIp(req) });
       return res.json({ ok: true, username: user.username });
     });
   } catch (e) {
@@ -156,21 +211,139 @@ app.post("/api/auth/login", (req, res, next) => {
     if (!user) return res.status(401).json({ message: info?.message || "Yetkisiz" });
     req.logIn(user, e => {
       if (e) return next(e);
+      writeAudit(db, { userId: user.id, action: "auth.login", meta: { username: user.username, role: user.role }, ip: reqIp(req) });
       return res.json({ ok: true });
     });
   })(req, res, next);
 });
 
 app.post("/api/auth/logout", (req, res, next) => {
+  const uid = req.user?.id;
+  const uname = req.user?.username;
   req.logout(err => {
     if (err) return next(err);
     if (!req.session) return res.json({ ok: true });
     req.session.destroy(e2 => {
       if (e2) return next(e2);
       res.clearCookie("k8s-topology.sid", { path: "/" });
+      if (db && uid) writeAudit(db, { userId: uid, action: "auth.logout", meta: { username: uname }, ip: reqIp(req) });
       res.json({ ok: true });
     });
   });
+});
+
+// ── Views (per-user presets) ──
+app.get("/api/views", requireAuth, (req, res) => {
+  if (!db) return res.json([]);
+  const rows = listViews(db, req.user.id).map(v => ({ ...v, data: safeJsonParse(v.dataJson, {}) }));
+  res.json(rows);
+});
+
+app.post("/api/views", requireAuth, (req, res) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const name = String(req.body?.name || "").trim();
+  const data = req.body?.data || {};
+  if (!name) return res.status(400).json({ message: "İsim gerekli" });
+  const row = upsertView(db, req.user.id, name, data);
+  writeAudit(db, { userId: req.user.id, action: "view.save", meta: { name }, ip: reqIp(req) });
+  res.json({ ...row, data: safeJsonParse(row.dataJson, {}) });
+});
+
+app.delete("/api/views/:id", requireAuth, (req, res) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const changes = deleteView(db, req.user.id, req.params.id);
+  writeAudit(db, { userId: req.user.id, action: "view.delete", meta: { id: req.params.id }, ip: reqIp(req) });
+  res.json({ ok: true, deleted: changes });
+});
+
+// ── Snapshots (stored + share links) ──
+app.get("/api/snapshots", requireAuth, (req, res) => {
+  if (!db) return res.json([]);
+  res.json(listSnapshots(db, req.user.id));
+});
+
+app.post("/api/snapshots", requireAuth, (req, res) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const title = String(req.body?.title || "Snapshot").trim();
+  const data = req.body?.data;
+  if (!data) return res.status(400).json({ message: "data gerekli" });
+  const row = createSnapshot(db, req.user.id, title, data, null);
+  writeAudit(db, { userId: req.user.id, action: "snapshot.create", meta: { id: row.id, title }, ip: reqIp(req) });
+  res.json(row);
+});
+
+app.get("/api/snapshots/:id", requireAuth, (req, res) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const row = getSnapshot(db, req.user.id, req.params.id);
+  if (!row) return res.status(404).json({ message: "Bulunamadı" });
+  res.json({ ...row, data: safeJsonParse(row.dataJson, null) });
+});
+
+app.post("/api/snapshots/:id/share", requireAuth, (req, res, next) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const shareId = crypto.randomBytes(16).toString("hex");
+  try {
+    const row = setSnapshotShareId(db, req.user.id, req.params.id, shareId);
+    if (!row) return res.status(404).json({ message: "Bulunamadı" });
+    writeAudit(db, { userId: req.user.id, action: "snapshot.share", meta: { id: row.id }, ip: reqIp(req) });
+    res.json({ ...row, shareUrl: `/share/${row.shareId}` });
+  } catch (e) {
+    return next(e);
+  }
+});
+
+app.get("/api/share/:shareId", (req, res) => {
+  if (!db) return res.status(404).json({ message: "Bulunamadı" });
+  const row = getSharedSnapshot(db, req.params.shareId);
+  if (!row) return res.status(404).json({ message: "Bulunamadı" });
+  res.json({ ...row, data: safeJsonParse(row.dataJson, null) });
+});
+
+// ── Audit (admin) ──
+app.get("/api/audit", requireAdmin, (req, res) => {
+  if (!db) return res.json([]);
+  const rows = listAudit(db, Number(req.query?.limit || 200)).map(r => ({ ...r, meta: safeJsonParse(r.metaJson, {}) }));
+  res.json(rows);
+});
+
+// ── Admin: user management ──
+app.get("/api/admin/users", requireAdmin, (req, res) => {
+  if (!db) return res.json([]);
+  res.json(listUsers(db, Number(req.query?.limit || 500)));
+});
+
+app.post("/api/admin/users/:id/role", requireAdmin, (req, res) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const targetId = String(req.params.id);
+  const role = String(req.body?.role || "").trim();
+  if (!role) return res.status(400).json({ message: "role gerekli" });
+  const updated = setUserRole(db, targetId, role);
+  if (!updated) return res.status(404).json({ message: "Kullanıcı bulunamadı" });
+  writeAudit(db, { userId: req.user.id, action: "admin.user.role", meta: { targetId, role: updated.role }, ip: reqIp(req) });
+  res.json(updated);
+});
+
+app.post("/api/admin/users/:id/disable", requireAdmin, (req, res) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const targetId = String(req.params.id);
+  const disabled = Boolean(req.body?.disabled ?? true);
+  if (String(req.user.id) === targetId && disabled) return res.status(400).json({ message: "Kendi hesabınızı devre dışı bırakamazsınız" });
+  const updated = setUserDisabled(db, targetId, disabled);
+  if (!updated) return res.status(404).json({ message: "Kullanıcı bulunamadı" });
+  writeAudit(db, { userId: req.user.id, action: "admin.user.disable", meta: { targetId, disabled: updated.disabled }, ip: reqIp(req) });
+  res.json(updated);
+});
+
+app.post("/api/admin/users/:id/reset-password", requireAdmin, (req, res) => {
+  if (!db) return res.status(400).json({ message: "DB yok" });
+  const targetId = String(req.params.id);
+  const password = String(req.body?.password || "");
+  if (password.length < 8) return res.status(400).json({ message: "Parola en az 8 karakter olmalı" });
+  const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
+  const updated = setUserPasswordHash(db, targetId, hash);
+  if (!updated) return res.status(404).json({ message: "Kullanıcı bulunamadı" });
+  writeAudit(db, { userId: req.user.id, action: "admin.user.reset_password", meta: { targetId }, ip: reqIp(req) });
+  res.json({ ok: true });
 });
 
 app.use(

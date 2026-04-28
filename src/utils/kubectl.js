@@ -71,6 +71,50 @@ function podImageInfoFromItem(item) {
   return lines.length ? lines.join("\n\n") : undefined;
 }
 
+function podPolicySignalsFromSpec(spec) {
+  const s = spec || {};
+  const ps = s.securityContext || {};
+  const containers = [...(s.containers || []), ...(s.initContainers || [])];
+  const cs = containers.map(c => c.securityContext || {});
+  const anyPrivileged = cs.some(x => x.privileged === true);
+  const anyAllowPrivEsc = cs.some(x => x.allowPrivilegeEscalation === true);
+  const anyRunAsRoot = cs.some(x => x.runAsNonRoot === false) || ps.runAsNonRoot === false;
+  const anyReadOnlyFsFalse = cs.some(x => x.readOnlyRootFilesystem === false);
+  const anyHostPath = (s.volumes || []).some(v => Boolean(v.hostPath));
+  const hostNetwork = s.hostNetwork === true;
+  const hostPID = s.hostPID === true;
+  const hostIPC = s.hostIPC === true;
+  const missingProbes = containers.some(c => !c.readinessProbe && !c.livenessProbe && !c.startupProbe);
+  return {
+    anyPrivileged,
+    anyAllowPrivEsc,
+    anyRunAsRoot,
+    anyReadOnlyFsFalse,
+    anyHostPath,
+    hostNetwork,
+    hostPID,
+    hostIPC,
+    missingProbes,
+  };
+}
+
+function ingressInfoFromItem(item) {
+  if (item.kind !== "Ingress") return undefined;
+  const hosts = [];
+  for (const r of item.spec?.rules || []) {
+    if (r.host) hosts.push(String(r.host));
+  }
+  const lbs = [];
+  for (const it of item.status?.loadBalancer?.ingress || []) {
+    if (it.ip) lbs.push(String(it.ip));
+    else if (it.hostname) lbs.push(String(it.hostname));
+  }
+  return {
+    hosts: [...new Set(hosts)].sort(),
+    loadBalancers: [...new Set(lbs)].sort(),
+  };
+}
+
 export function parseCpuToMilli(v) {
   if (!v || typeof v !== "string") return 0;
   if (v.endsWith("m")) return Math.round(parseFloat(v) || 0);
@@ -282,6 +326,10 @@ export function parseKubectl(jsonStr) {
       rollout: ["Deployment", "ReplicaSet"].includes(k) ? rolloutSummaryFromItem(full) : undefined,
       podContainers: k === "Pod" ? podContainerNamesFromSpec(full) : undefined,
       podImageInfo: k === "Pod" ? podImageInfoFromItem(full) : undefined,
+      policy: ["Pod", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"].includes(k)
+        ? podPolicySignalsFromSpec(k === "Pod" ? item.spec : item.spec?.template?.spec)
+        : undefined,
+      ingress: k === "Ingress" ? ingressInfoFromItem(full) : undefined,
     });
     rawItems.push({ ...full, _id: id });
   }

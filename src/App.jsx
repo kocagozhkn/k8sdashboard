@@ -13,7 +13,9 @@ import { DEMO } from "./constants/demo.js";
 import { analyzeHealth, nodeHealthLevel } from "./utils/health.js";
 import { parseKubectl, mergePodMetricsFromApi } from "./utils/kubectl.js";
 import { enrichGraphData, dependencyImpactForNode, eventsForSelectedNode, rolloutRelatedNodes, pickInitialNamespace } from "./utils/graph.js";
-import { exportTopologySvg, exportTableCsv } from "./utils/export.js";
+import { exportTopologySvg, exportTableCsv, buildTopologySvgString, buildTableCsv } from "./utils/export.js";
+import JSZip from "jszip";
+import { jsPDF } from "jspdf";
 import { loadSnapshotHistory, saveSnapshotHistory, makeSnapshot, compareGraphToSnapshot } from "./utils/snapshot.js";
 import { isLocalViteDev, isUiServedViaTopologyPod, normalizeKubernetesListBase, kubernetesListFetchUrl, fetchClusterEvents, fetchPodLogTail } from "./utils/network.js";
 import { useGraph } from "./hooks/useGraph.js";
@@ -21,7 +23,18 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { Sidebar } from "./components/Sidebar.jsx";
 import { DetailPanel } from "./components/DetailPanel.jsx";
 import { AuthScreen } from "./components/AuthScreen.jsx";
+import { CommandPalette } from "./components/CommandPalette.jsx";
 import { loadAuthStatus, loginWithCredentials, signupAccount, logoutAuth } from "./utils/simpleAuth.js";
+import {
+  listSavedViews,
+  saveView as apiSaveView,
+  deleteView as apiDeleteView,
+  listSnapshots as apiListSnapshots,
+  createSnapshot as apiCreateSnapshot,
+  shareSnapshot as apiShareSnapshot,
+  getSharedSnapshot as apiGetSharedSnapshot,
+} from "./utils/userDataApi.js";
+import { adminListUsers, adminSetUserRole, adminDisableUser, adminResetPassword, adminListAudit } from "./utils/adminApi.js";
 
 function prometheusUrlInitial() {
   if (typeof window === "undefined") return "";
@@ -74,6 +87,7 @@ export default function App() {
   const [fetchWarnings, setFetchWarnings] = useState([]);
   const [clusterEvents, setClusterEvents] = useState([]);
   const [eventsOpen, setEventsOpen] = useState(false);
+  const [ingressOpen, setIngressOpen] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState(null);
   const [refreshIntervalSec, setRefreshIntervalSec] = useState(0);
   const [graphView, setGraphView] = useState("graph");
@@ -104,6 +118,23 @@ export default function App() {
     defaultTab: "login",
   });
   const [loginErr, setLoginErr] = useState("");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [savedViews, setSavedViews] = useState([]);
+  const [serverSnapshots, setServerSnapshots] = useState([]);
+  const [shareBanner, setShareBanner] = useState("");
+  const [serverCompareA, setServerCompareA] = useState("");
+  const [serverCompareB, setServerCompareB] = useState("");
+  const [serverCompareDiff, setServerCompareDiff] = useState(null);
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminAudit, setAdminAudit] = useState([]);
+  const [promOpen, setPromOpen] = useState(false);
+  const [promQuery, setPromQuery] = useState("up");
+  const [promResult, setPromResult] = useState(null);
+  const [promSaved, setPromSaved] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("k8s-topology-prom-saved") || "[]"); } catch { return []; }
+  });
   const [rightPanelWidth, setRightPanelWidth] = useState(() => {
     if (typeof window === "undefined") return 278;
     try {
@@ -124,6 +155,56 @@ export default function App() {
     void loadAuthStatus().then(({ required, authenticated, hasUsers, allowSignup, defaultTab }) =>
       setAuthState({ ready: true, required, authenticated, hasUsers, allowSignup, defaultTab }),
     );
+  }, []);
+
+  useEffect(() => {
+    if (!(authState.ready && authState.required && authState.authenticated)) { setSavedViews([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const views = await listSavedViews();
+        if (!cancelled) setSavedViews(Array.isArray(views) ? views : []);
+      } catch {
+        if (!cancelled) setSavedViews([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [authState.ready, authState.required, authState.authenticated]);
+
+  useEffect(() => {
+    if (!(authState.ready && authState.required && authState.authenticated)) { setServerSnapshots([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const snaps = await apiListSnapshots();
+        if (!cancelled) setServerSnapshots(Array.isArray(snaps) ? snaps : []);
+      } catch {
+        if (!cancelled) setServerSnapshots([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [authState.ready, authState.required, authState.authenticated]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const p = window.location.pathname || "/";
+    if (!p.startsWith("/share/")) return;
+    const shareId = p.replace("/share/", "").split("/")[0].trim();
+    if (!shareId) return;
+    (async () => {
+      try {
+        const s = await apiGetSharedSnapshot(shareId);
+        if (!s?.data) return;
+        const g = enrichGraphData(s.data);
+        setGraphData(g);
+        setSelected(null);
+        setNsFilter(pickInitialNamespace(g.nodes));
+        setScreen("graph");
+        setShareBanner(`Paylaşılan snapshot: ${s.title || "Snapshot"} (${new Date(s.createdAt || Date.now()).toLocaleString()})`);
+      } catch (e) {
+        setErr(e.message || String(e));
+      }
+    })();
   }, []);
 
   // ── Kubeconfig persistence ──
@@ -224,6 +305,17 @@ export default function App() {
     // Use unfiltered graphData so Azure deps show even when AzureService nodes are filtered out of the graph view
     return (graphData?.edges || []).filter(e => e.source === current.id && e.type === "azure").map(e => (graphData?.nodes || []).find(n => n.id === e.target)).filter(Boolean);
   }, [detailNode, selected, graphData]);
+
+  const ingressRoutes = useMemo(() => {
+    if (!graphData) return [];
+    const routes = (graphData.edges || []).filter(e => e.type === "routes");
+    const nodeById = new Map((graphData.nodes || []).map(n => [n.id, n]));
+    return routes.map(e => ({
+      ingress: nodeById.get(e.source),
+      service: nodeById.get(e.target),
+      path: e.label || "/",
+    })).filter(r => r.ingress && r.service);
+  }, [graphData]);
 
   useEffect(() => { if (!selected) return; if (filtered.nodes.some(n => n.id === selected.id)) return; setSelected(null); }, [filtered, selected]);
   useEffect(() => { if (meshProfile === "off") { setMeshStats(null); setMeshErr(""); setMeshAutoResolved(null); } }, [meshProfile]);
@@ -342,6 +434,7 @@ export default function App() {
     onEscape: () => setSelected(null),
     onSearch: () => searchInputRef.current?.focus(),
     onRefresh: () => { if (screen === "graph") fetchAPI(); },
+    onCommandPalette: () => { setPaletteQuery(""); setPaletteOpen(true); },
   });
 
   // ── Screens ──
@@ -508,9 +601,336 @@ export default function App() {
     </div>
   );
 
+  const paletteItems = useMemo(() => {
+    const cmds = [
+      {
+        key: "cmd-admin",
+        title: "Admin panel",
+        subtitle: "Kullanıcılar ve audit log",
+        hint: "admin",
+        searchText: "admin users audit",
+        onPick: () => setAdminPanelOpen(true),
+      },
+      {
+        key: "cmd-prom",
+        title: "Prometheus query explorer",
+        subtitle: "Sorgu çalıştır ve sonuç gör",
+        hint: "prom",
+        searchText: "prometheus query explorer promql",
+        onPick: () => setPromOpen(true),
+      },
+      {
+        key: "cmd-refresh",
+        title: "Yenile",
+        subtitle: "Canlı API çağrısını tekrar çalıştır",
+        hint: "r",
+        searchText: "yenile refresh",
+        onPick: () => fetchAPI(),
+      },
+      {
+        key: "cmd-search",
+        title: "Arama kutusuna odaklan",
+        subtitle: "Sol panel arama",
+        hint: "/",
+        searchText: "ara search filtre",
+        onPick: () => searchInputRef.current?.focus(),
+      },
+      {
+        key: "cmd-table",
+        title: "Tablo görünümü",
+        subtitle: "Grafik yerine tabloyu göster",
+        hint: "t",
+        searchText: "tablo table",
+        onPick: () => setGraphView("table"),
+      },
+      {
+        key: "cmd-graph",
+        title: "Grafik görünümü",
+        subtitle: "Tablo yerine grafiği göster",
+        hint: "g",
+        searchText: "grafik graph",
+        onPick: () => setGraphView("graph"),
+      },
+    ];
+
+    const nodes = (graphWithTraffic?.nodes || []).slice(0, 5000).map(n => ({
+      key: `node-${n.id}`,
+      title: `${n.kind}: ${n.name}`,
+      subtitle: `${n.namespace} · ${n.id}`,
+      hint: "Seç",
+      searchText: `${n.kind} ${n.name} ${n.namespace} ${n.id}`.toLowerCase(),
+      onPick: () => {
+        setSelected(n);
+        setScreen("graph");
+      },
+    }));
+    const views = (savedViews || []).map(v => ({
+      key: `view-${v.id}`,
+      title: `Görünüm: ${v.name}`,
+      subtitle: "Kaydedilmiş preset",
+      hint: "Yükle",
+      searchText: `görünüm view preset ${v.name}`.toLowerCase(),
+      onPick: () => {
+        const d = v.data || {};
+        if (d.nsFilter != null) setNsFilter(String(d.nsFilter));
+        if (Array.isArray(d.typeFilters)) setTypeFilters(new Set(d.typeFilters));
+        if (d.nameFilter != null) setNameFilter(String(d.nameFilter));
+        if (d.healthFilter != null) setHealthFilter(String(d.healthFilter));
+        if (d.graphView === "table" || d.graphView === "graph") setGraphView(d.graphView);
+        if (typeof d.namespaceLanes === "boolean") setNamespaceLanes(d.namespaceLanes);
+        if (typeof d.maskSecrets === "boolean") setMaskSecrets(d.maskSecrets);
+      },
+    }));
+
+    return [...cmds, ...views, ...nodes];
+  }, [graphWithTraffic, fetchAPI, graphView, savedViews]);
+
+  useEffect(() => {
+    if (!(authState.ready && authState.required && authState.authenticated && authState.role === "admin")) { setAdminPanelOpen(false); return; }
+  }, [authState.ready, authState.required, authState.authenticated, authState.role]);
+
   // ── GRAPH SCREEN ──
   return (
     <div style={{ display: "flex", height: "100vh", background: "#020817", color: "#E2E8F0", fontFamily: "system-ui,sans-serif", overflow: "hidden" }}>
+      <CommandPalette
+        open={paletteOpen}
+        query={paletteQuery}
+        setQuery={setPaletteQuery}
+        items={paletteItems}
+        onClose={() => setPaletteOpen(false)}
+        onSelect={it => {
+          setPaletteOpen(false);
+          it?.onPick?.();
+        }}
+      />
+      {adminPanelOpen && authState.role === "admin" ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={e => { if (e.target === e.currentTarget) setAdminPanelOpen(false); }}
+          style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(2,6,23,.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 48 }}
+        >
+          <div style={{ width: "min(980px, calc(100vw - 24px))", background: "#0B1222", border: "1px solid #1E293B", borderRadius: 14, overflow: "hidden" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #1E293B" }}>
+              <div style={{ fontWeight: 800, fontSize: 13 }}>Admin Panel</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const [u, a] = await Promise.all([adminListUsers(), adminListAudit(200)]);
+                        setAdminUsers(Array.isArray(u) ? u : []);
+                        setAdminAudit(Array.isArray(a) ? a : []);
+                      } catch (e) {
+                        setErr(e.message || String(e));
+                      }
+                    })();
+                  }}
+                  style={{ background: "#0F172A", border: "1px solid #1E293B", color: "#94A3B8", borderRadius: 10, padding: "8px 10px", cursor: "pointer", fontSize: 12 }}
+                >
+                  Yenile
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminPanelOpen(false)}
+                  style={{ background: "#0F172A", border: "1px solid #1E293B", color: "#94A3B8", borderRadius: 10, padding: "8px 10px", cursor: "pointer", fontSize: 12 }}
+                >
+                  Kapat
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 0 }}>
+              {/* Users */}
+              <div style={{ borderRight: "1px solid #1E293B", padding: 12, minHeight: 420 }}>
+                <div style={{ fontSize: 11, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Kullanıcılar</div>
+                <div style={{ overflow: "auto", maxHeight: "min(520px, calc(100vh - 180px))", border: "1px solid #1E293B", borderRadius: 10 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", color: "#64748B", borderBottom: "1px solid #1E293B" }}>
+                        <th style={{ padding: "8px 10px" }}>id</th>
+                        <th style={{ padding: "8px 10px" }}>username</th>
+                        <th style={{ padding: "8px 10px" }}>role</th>
+                        <th style={{ padding: "8px 10px" }}>disabled</th>
+                        <th style={{ padding: "8px 10px" }}>actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminUsers.map(u => (
+                        <tr key={u.id} style={{ borderBottom: "1px solid #0F172A" }}>
+                          <td style={{ padding: "8px 10px", color: "#94A3B8", fontFamily: "monospace" }}>{u.id}</td>
+                          <td style={{ padding: "8px 10px", color: "#E2E8F0" }}>{u.username}</td>
+                          <td style={{ padding: "8px 10px", color: u.role === "admin" ? "#FDE68A" : "#93C5FD" }}>{u.role}</td>
+                          <td style={{ padding: "8px 10px", color: u.disabled ? "#FCA5A5" : "#86EFAC" }}>{u.disabled ? "yes" : "no"}</td>
+                          <td style={{ padding: "8px 10px" }}>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const role = u.role === "admin" ? "viewer" : "admin";
+                                  void (async () => {
+                                    try {
+                                      await adminSetUserRole(u.id, role);
+                                      const users = await adminListUsers();
+                                      setAdminUsers(Array.isArray(users) ? users : []);
+                                    } catch (e) { setErr(e.message || String(e)); }
+                                  })();
+                                }}
+                                style={{ background: "#0F172A", border: "1px solid #1E293B", color: "#94A3B8", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 11 }}
+                              >
+                                role
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void (async () => {
+                                    try {
+                                      await adminDisableUser(u.id, !u.disabled);
+                                      const users = await adminListUsers();
+                                      setAdminUsers(Array.isArray(users) ? users : []);
+                                    } catch (e) { setErr(e.message || String(e)); }
+                                  })();
+                                }}
+                                style={{ background: u.disabled ? "#052e1a" : "#450A0A", border: "1px solid #1E293B", color: u.disabled ? "#86EFAC" : "#FCA5A5", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 11 }}
+                              >
+                                {u.disabled ? "enable" : "disable"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const pw = window.prompt(`Yeni parola (${u.username})`, "");
+                                  if (!pw) return;
+                                  void (async () => {
+                                    try {
+                                      await adminResetPassword(u.id, pw);
+                                    } catch (e) { setErr(e.message || String(e)); }
+                                  })();
+                                }}
+                                style={{ background: "#0F172A", border: "1px solid #1E293B", color: "#94A3B8", borderRadius: 8, padding: "6px 8px", cursor: "pointer", fontSize: 11 }}
+                              >
+                                reset pw
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {adminUsers.length === 0 ? (
+                        <tr><td colSpan={5} style={{ padding: 12, color: "#64748B" }}>Kayıt yok (Yenile)</td></tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Audit */}
+              <div style={{ padding: 12, minHeight: 420 }}>
+                <div style={{ fontSize: 11, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Audit log</div>
+                <div style={{ overflow: "auto", maxHeight: "min(520px, calc(100vh - 180px))", border: "1px solid #1E293B", borderRadius: 10, padding: 10 }}>
+                  {adminAudit.length === 0 ? <div style={{ color: "#64748B", fontSize: 12 }}>Kayıt yok (Yenile)</div> : null}
+                  {adminAudit.map(a => (
+                    <div key={a.id} style={{ borderBottom: "1px solid #0F172A", padding: "8px 0" }}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "baseline" }}>
+                        <span style={{ color: "#94A3B8", fontFamily: "monospace", fontSize: 11 }}>#{a.id}</span>
+                        <span style={{ color: "#64748B", fontSize: 10 }}>{a.at}</span>
+                        <span style={{ color: "#93C5FD", fontWeight: 700, fontSize: 11 }}>{a.action}</span>
+                        <span style={{ color: "#475569", fontSize: 10 }}>userId={a.userId ?? "—"}</span>
+                      </div>
+                      {a.meta ? <div style={{ color: "#64748B", fontSize: 10, fontFamily: "monospace", marginTop: 4, whiteSpace: "pre-wrap" }}>{JSON.stringify(a.meta)}</div> : null}
+                      {a.ip ? <div style={{ color: "#475569", fontSize: 10, marginTop: 4 }}>ip: {a.ip}</div> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {promOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={e => { if (e.target === e.currentTarget) setPromOpen(false); }}
+          style={{ position: "fixed", inset: 0, zIndex: 55, background: "rgba(2,6,23,.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 56 }}
+        >
+          <div style={{ width: "min(980px, calc(100vw - 24px))", background: "#0B1222", border: "1px solid #1E293B", borderRadius: 14, overflow: "hidden" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #1E293B" }}>
+              <div style={{ fontWeight: 800, fontSize: 13 }}>Prometheus Query Explorer</div>
+              <button type="button" onClick={() => setPromOpen(false)} style={{ background: "#0F172A", border: "1px solid #1E293B", color: "#94A3B8", borderRadius: 10, padding: "8px 10px", cursor: "pointer", fontSize: 12 }}>Kapat</button>
+            </div>
+            <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <input
+                  value={promQuery}
+                  onChange={e => setPromQuery(e.target.value)}
+                  placeholder="PromQL..."
+                  style={{ flex: "1 1 420px", background: "#020817", border: "1px solid #334155", borderRadius: 10, color: "#E2E8F0", padding: "10px 12px", fontFamily: "ui-monospace,monospace", fontSize: 12, outline: "none" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        setPromResult({ loading: true });
+                        const url = `/prometheus/api/v1/query?query=${encodeURIComponent(promQuery)}`;
+                        const r = await fetch(url, { credentials: "omit", cache: "no-store" });
+                        const j = await r.json();
+                        setPromResult({ loading: false, ok: r.ok, data: j });
+                      } catch (e) {
+                        setPromResult({ loading: false, ok: false, error: e.message || String(e) });
+                      }
+                    })();
+                  }}
+                  style={{ background: "#6366F1", border: "none", color: "#fff", borderRadius: 10, padding: "10px 12px", cursor: "pointer", fontSize: 12, fontWeight: 800 }}
+                >
+                  Çalıştır
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const name = window.prompt("Kaydet adı", "");
+                    if (!name) return;
+                    const next = [{ name, query: promQuery }, ...promSaved.filter(s => s.name !== name)].slice(0, 30);
+                    setPromSaved(next);
+                    try { localStorage.setItem("k8s-topology-prom-saved", JSON.stringify(next)); } catch { /* */ }
+                  }}
+                  style={{ background: "#0F172A", border: "1px solid #1E293B", color: "#94A3B8", borderRadius: 10, padding: "10px 12px", cursor: "pointer", fontSize: 12 }}
+                >
+                  Kaydet
+                </button>
+                {promSaved.length ? (
+                  <select
+                    value=""
+                    onChange={e => {
+                      const n = e.target.value;
+                      if (!n) return;
+                      const s = promSaved.find(x => x.name === n);
+                      if (s) setPromQuery(s.query);
+                      e.target.value = "";
+                    }}
+                    style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 10, color: "#94A3B8", fontSize: 12, padding: "10px 12px", cursor: "pointer" }}
+                  >
+                    <option value="">Saved…</option>
+                    {promSaved.map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+                  </select>
+                ) : null}
+              </div>
+
+              <div style={{ border: "1px solid #1E293B", borderRadius: 12, background: "#020817", padding: 10, maxHeight: "min(560px, calc(100vh - 220px))", overflow: "auto" }}>
+                {promResult?.loading ? (
+                  <div style={{ color: "#64748B", fontSize: 12 }}>Çalışıyor…</div>
+                ) : promResult?.error ? (
+                  <div style={{ color: "#FCA5A5", fontSize: 12 }}>{promResult.error}</div>
+                ) : promResult ? (
+                  <pre style={{ margin: 0, color: "#CBD5E1", fontSize: 11, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>{JSON.stringify(promResult.data, null, 2)}</pre>
+                ) : (
+                  <div style={{ color: "#64748B", fontSize: 12 }}>Bir sorgu çalıştırın.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <Sidebar
         filtered={filtered} issues={issues} nameFilter={nameFilter} setNameFilter={setNameFilter}
         healthFilter={healthFilter} setHealthFilter={setHealthFilter} nsFilter={nsFilter}
@@ -526,6 +946,11 @@ export default function App() {
             <b>Kısmi API uyarısı</b> — {fetchWarnings.length} istek başarısız
           </div>
         )}
+        {shareBanner ? (
+          <div style={{ flexShrink: 0, background: "#0C1A3A", borderBottom: "1px solid #60A5FA", color: "#93C5FD", fontSize: 11, padding: "6px 12px", lineHeight: 1.4 }}>
+            <b>Paylaşım</b> — {shareBanner}
+          </div>
+        ) : null}
         <div style={{ position: "absolute", top: fetchWarnings.length ? 44 : 12, left: 12, right: 12, zIndex: 10, display: "flex", flexDirection: "column", gap: 6 }}>
           {/* Toolbar row 1 */}
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -543,6 +968,70 @@ export default function App() {
             }) : null}
             {ghostBtn("📋 Yeni", () => setScreen("input"))}
             {ghostBtn(loading ? "…" : "Yenile (r)", () => fetchAPI())}
+            {authRequired ? (
+              <>
+                <select
+                  value=""
+                  onChange={e => {
+                    const id = e.target.value;
+                    if (!id) return;
+                    const v = savedViews.find(x => String(x.id) === String(id));
+                    const d = v?.data || {};
+                    if (d.nsFilter != null) setNsFilter(String(d.nsFilter));
+                    if (Array.isArray(d.typeFilters)) setTypeFilters(new Set(d.typeFilters));
+                    if (d.nameFilter != null) setNameFilter(String(d.nameFilter));
+                    if (d.healthFilter != null) setHealthFilter(String(d.healthFilter));
+                    if (d.graphView === "table" || d.graphView === "graph") setGraphView(d.graphView);
+                    if (typeof d.namespaceLanes === "boolean") setNamespaceLanes(d.namespaceLanes);
+                    if (typeof d.maskSecrets === "boolean") setMaskSecrets(d.maskSecrets);
+                    e.target.value = "";
+                  }}
+                  style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer", minWidth: 180 }}
+                  title="Kaydedilmiş görünüm yükle"
+                >
+                  <option value="">Görünüm yükle…</option>
+                  {savedViews.map(v => <option key={v.id} value={String(v.id)}>{v.name}</option>)}
+                </select>
+                {ghostBtn("💾 Görünüm kaydet", () => {
+                  const name = window.prompt("Görünüm adı", "");
+                  if (!name) return;
+                  void (async () => {
+                    try {
+                      const payload = {
+                        nsFilter,
+                        typeFilters: [...typeFilters],
+                        nameFilter,
+                        healthFilter,
+                        graphView,
+                        namespaceLanes,
+                        maskSecrets,
+                      };
+                      const v = await apiSaveView(name, payload);
+                      setSavedViews(prev => {
+                        const next = [v, ...prev.filter(x => String(x.id) !== String(v.id))];
+                        return next;
+                      });
+                    } catch (e) {
+                      setErr(e.message || String(e));
+                    }
+                  })();
+                })}
+                {savedViews.length > 0 ? ghostBtn("🗑️ Görünüm sil", () => {
+                  const name = window.prompt("Silinecek görünüm adı (tam eşleşme)", "");
+                  if (!name) return;
+                  const v = savedViews.find(x => x.name === name);
+                  if (!v) { setErr("Görünüm bulunamadı."); return; }
+                  void (async () => {
+                    try {
+                      await apiDeleteView(v.id);
+                      setSavedViews(prev => prev.filter(x => String(x.id) !== String(v.id)));
+                    } catch (e) {
+                      setErr(e.message || String(e));
+                    }
+                  })();
+                }) : null}
+              </>
+            ) : null}
             <select value={String(refreshIntervalSec)} onChange={e => setRefreshIntervalSec(Number(e.target.value))} style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer" }}>
               <option value="0">Otomatik kapalı</option>
               <option value="30">30 sn</option>
@@ -562,6 +1051,61 @@ export default function App() {
             </div>
             {ghostBtn("SVG indir", () => exportTopologySvg(svgRef.current))}
             {ghostBtn("CSV indir", () => exportTableCsv(filtered.nodes, issues, nodeHealthLevel, maskSecrets))}
+            {ghostBtn("📦 Rapor indir", () => {
+              if (!graphData) { setErr("Önce veri yükleyin."); return; }
+              void (async () => {
+                try {
+                  const zip = new JSZip();
+                  const ts = new Date().toISOString().slice(0, 19).replace(/:/g, "");
+                  zip.file("snapshot.json", JSON.stringify(graphData, null, 2));
+                  zip.file("issues.json", JSON.stringify(issues, null, 2));
+                  zip.file("filtered.csv", buildTableCsv(filtered.nodes, issues, nodeHealthLevel, maskSecrets));
+                  const svg = buildTopologySvgString(svgRef.current);
+                  if (svg) zip.file("topology.svg", svg);
+                  const blob = await zip.generateAsync({ type: "blob" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `k8s-topology-report-${ts}.zip`;
+                  a.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 0);
+                } catch (e) {
+                  setErr(e.message || String(e));
+                }
+              })();
+            })}
+            {ghostBtn("🧾 PDF", () => {
+              if (!graphData) { setErr("Önce veri yükleyin."); return; }
+              try {
+                const doc = new jsPDF({ unit: "pt", format: "a4" });
+                const ts = new Date().toISOString();
+                const margin = 40;
+                let y = margin;
+                const line = (t, size = 12) => {
+                  doc.setFontSize(size);
+                  const lines = doc.splitTextToSize(String(t), 520);
+                  doc.text(lines, margin, y);
+                  y += lines.length * (size + 4);
+                };
+
+                line("K8s Topology Report", 18);
+                line(`Generated: ${ts}`, 10);
+                line(`Nodes: ${graphData.nodes?.length || 0}  Edges: ${graphData.edges?.length || 0}`, 10);
+                const crit = issues.filter(i => i.level === "critical").length;
+                const warn = issues.filter(i => i.level === "warning").length;
+                const info = issues.filter(i => i.level === "info").length;
+                line(`Issues: critical=${crit} warning=${warn} info=${info}`, 11);
+                y += 6;
+                line("Top issues:", 13);
+                const top = issues.slice(0, 20);
+                for (const it of top) {
+                  line(`- [${it.level}] ${it.code}: ${it.msg}`, 10);
+                }
+                doc.save(`k8s-topology-report-${ts.slice(0, 19).replace(/:/g, "")}.pdf`);
+              } catch (e) {
+                setErr(e.message || String(e));
+              }
+            })}
             {ghostBtn("Anlık kaydet", () => {
               if (!graphData) return;
               setSnapshotBaseline({ ids: [...new Set(graphData.nodes.map(n => n.id))].sort(), t: Date.now() });
@@ -569,6 +1113,66 @@ export default function App() {
               setSnapshotHistory(prev => [snap, ...prev.filter(s => s.id !== snap.id)].slice(0, 12));
               setCompareSnapshotId(snap.id); setDiffSummary(null);
             })}
+            {authRequired ? ghostBtn("☁️ Sunucuya kaydet", () => {
+              if (!graphData) return;
+              const title = window.prompt("Snapshot adı", `Snapshot ${new Date().toLocaleString()}`);
+              if (!title) return;
+              void (async () => {
+                try {
+                  const row = await apiCreateSnapshot(title, graphData);
+                  setServerSnapshots(prev => [row, ...prev.filter(s => String(s.id) !== String(row.id))].slice(0, 80));
+                } catch (e) {
+                  setErr(e.message || String(e));
+                }
+              })();
+            }) : null}
+            {authRequired ? (
+              <select
+                value=""
+                onChange={e => {
+                  const id = e.target.value;
+                  if (!id) return;
+                  const s = serverSnapshots.find(x => String(x.id) === String(id));
+                  if (!s) return;
+                  void (async () => {
+                    try {
+                      // We reuse share API only for read-only share; for load we fetch snapshot via shared route by forcing share if needed.
+                      const shared = s.shareId ? { shareId: s.shareId } : await apiShareSnapshot(s.id);
+                      const snap = await apiGetSharedSnapshot(shared.shareId);
+                      if (!snap?.data) return;
+                      const g = enrichGraphData(snap.data);
+                      setGraphData(g);
+                      setSelected(null);
+                      setNsFilter(pickInitialNamespace(g.nodes));
+                      setScreen("graph");
+                      setShareBanner(`Sunucu snapshot yüklendi: ${snap.title || "Snapshot"}`);
+                    } catch (ex) {
+                      setErr(ex.message || String(ex));
+                    }
+                  })();
+                  e.target.value = "";
+                }}
+                style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer", minWidth: 180 }}
+                title="Sunucu snapshot yükle"
+              >
+                <option value="">Snapshot yükle…</option>
+                {serverSnapshots.map(s => <option key={s.id} value={String(s.id)}>{new Date(s.createdAt).toLocaleString()} · {s.title}</option>)}
+              </select>
+            ) : null}
+            {authRequired && serverSnapshots.length > 0 ? ghostBtn("🔗 Paylaş", () => {
+              const id = window.prompt("Paylaşılacak snapshot ID", "");
+              if (!id) return;
+              void (async () => {
+                try {
+                  const row = await apiShareSnapshot(id);
+                  const full = `${window.location.origin}${row.shareUrl}`;
+                  try { await navigator.clipboard.writeText(full); setShareBanner(`Link panoya kopyalandı: ${row.shareUrl}`); }
+                  catch { window.prompt("Paylaşım linki", full); }
+                } catch (e) {
+                  setErr(e.message || String(e));
+                }
+              })();
+            }) : null}
             {ghostBtn("Karşılaştır", () => {
               if (!snapshotBaseline || !graphData) { setDiffSummary(null); return; }
               const now = new Set(graphData.nodes.map(n => n.id));
@@ -610,6 +1214,7 @@ export default function App() {
                 style={{ flex: "1 1 200px", minWidth: 160, maxWidth: 420, background: "#020817", border: "1px solid #1E293B", borderRadius: 6, color: "#E2E8F0", fontSize: 11, padding: "5px 8px", outline: "none" }} />
             )}
             {ghostBtn(meshLoading ? "Trafik…" : "Trafik yenile", () => void loadMeshTraffic())}
+            {ghostBtn("PromQL", () => setPromOpen(true))}
             {meshFetchedAt && <span style={{ fontSize: 10, color: "#22D3EE" }}>RPS: {meshFetchedAt.toLocaleTimeString()}</span>}
             {meshErr && <span style={{ fontSize: 10, color: "#F87171", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={meshErr}>{meshErr}</span>}
           </div>
@@ -692,6 +1297,32 @@ export default function App() {
           )}
         </div>
 
+        {/* Ingress routes */}
+        {ingressRoutes.length > 0 && (
+          <div style={{ borderBottom: "1px solid #1E293B", flexShrink: 0 }}>
+            <div onClick={() => setIngressOpen(o => !o)} style={{ padding: "8px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", userSelect: "none" }}>
+              <span style={{ fontWeight: 600, fontSize: 12 }}>🌐 Ingress Routes ({ingressRoutes.length})</span>
+              <span style={{ color: "#64748B", fontSize: 11 }}>{ingressOpen ? "▼" : "▶"}</span>
+            </div>
+            {ingressOpen && (
+              <div style={{ maxHeight: 180, overflowY: "auto", padding: "0 10px 8px", fontSize: 10 }}>
+                {ingressRoutes.slice(0, 120).map((r, idx) => (
+                  <div key={`${r.ingress.id}-${r.service.id}-${idx}`} style={{ borderBottom: "1px solid #0F172A", padding: "6px 0", lineHeight: 1.35 }}>
+                    <div style={{ color: "#93C5FD", fontWeight: 700 }}>{r.ingress.namespace}/{r.ingress.name} <span style={{ color: "#475569", fontWeight: 400 }}>→</span> <span style={{ color: "#E2E8F0" }}>{r.service.namespace}/{r.service.name}</span></div>
+                    {r.ingress.ingress?.hosts?.length ? (
+                      <div style={{ color: "#64748B" }}>host: <span style={{ color: "#CBD5E1", fontFamily: "monospace" }}>{r.ingress.ingress.hosts.join(", ")}</span></div>
+                    ) : null}
+                    {r.ingress.ingress?.loadBalancers?.length ? (
+                      <div style={{ color: "#64748B" }}>lb: <span style={{ color: "#A78BFA", fontFamily: "monospace" }}>{r.ingress.ingress.loadBalancers.join(", ")}</span></div>
+                    ) : null}
+                    <div style={{ color: "#64748B" }}>path: <span style={{ color: "#A78BFA", fontFamily: "monospace" }}>{r.path}</span></div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Snapshot diff */}
         {historyDiff && (
           <div style={{ borderBottom: "1px solid #1E293B", padding: "8px 12px", flexShrink: 0 }}>
@@ -701,6 +1332,50 @@ export default function App() {
               <span style={{ fontSize: 10, color: "#FCA5A5" }}>- {historyDiff.removed.length}</span>
               <span style={{ fontSize: 10, color: "#FCD34D" }}>~ {historyDiff.changed.length}</span>
             </div>
+          </div>
+        )}
+
+        {/* Server snapshot compare */}
+        {authRequired && serverSnapshots.length >= 2 && (
+          <div style={{ borderBottom: "1px solid #1E293B", padding: "8px 12px", flexShrink: 0 }}>
+            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Server snapshot compare</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <select value={serverCompareA} onChange={e => setServerCompareA(e.target.value)} style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer", minWidth: 180 }}>
+                <option value="">A seç…</option>
+                {serverSnapshots.map(s => <option key={`a-${s.id}`} value={String(s.id)}>{new Date(s.createdAt).toLocaleString()} · {s.title}</option>)}
+              </select>
+              <select value={serverCompareB} onChange={e => setServerCompareB(e.target.value)} style={{ background: "#0F172A", border: "1px solid #1E293B", borderRadius: 6, color: "#94A3B8", fontSize: 11, padding: "4px 8px", cursor: "pointer", minWidth: 180 }}>
+                <option value="">B seç…</option>
+                {serverSnapshots.map(s => <option key={`b-${s.id}`} value={String(s.id)}>{new Date(s.createdAt).toLocaleString()} · {s.title}</option>)}
+              </select>
+              {ghostBtn("Karşılaştır", () => {
+                if (!serverCompareA || !serverCompareB) { setServerCompareDiff(null); return; }
+                void (async () => {
+                  try {
+                    const aMeta = serverSnapshots.find(x => String(x.id) === String(serverCompareA));
+                    const bMeta = serverSnapshots.find(x => String(x.id) === String(serverCompareB));
+                    if (!aMeta || !bMeta) return;
+                    const aShare = aMeta.shareId ? { shareId: aMeta.shareId } : await apiShareSnapshot(aMeta.id);
+                    const bShare = bMeta.shareId ? { shareId: bMeta.shareId } : await apiShareSnapshot(bMeta.id);
+                    const [a, b] = await Promise.all([apiGetSharedSnapshot(aShare.shareId), apiGetSharedSnapshot(bShare.shareId)]);
+                    const gA = a?.data ? enrichGraphData(a.data) : null;
+                    const gB = b?.data ? enrichGraphData(b.data) : null;
+                    if (!gA || !gB) return;
+                    const diff = compareGraphToSnapshot(gA, makeSnapshot(gB));
+                    setServerCompareDiff(diff);
+                  } catch (e) {
+                    setErr(e.message || String(e));
+                  }
+                })();
+              })}
+            </div>
+            {serverCompareDiff ? (
+              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 10 }}>
+                <span style={{ color: "#86EFAC" }}>+ {serverCompareDiff.added.length}</span>
+                <span style={{ color: "#FCA5A5" }}>- {serverCompareDiff.removed.length}</span>
+                <span style={{ color: "#FCD34D" }}>~ {serverCompareDiff.changed.length}</span>
+              </div>
+            ) : null}
           </div>
         )}
 

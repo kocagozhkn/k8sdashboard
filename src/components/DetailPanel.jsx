@@ -26,6 +26,18 @@ export function DetailPanel({
   const descL = `kubectl describe ${plural} ${selected.name} -n ${selected.namespace}`;
   const h = nodeHealthLevel(selected.id, issues);
   const showName = (n) => maskSecrets && n.kind === "Secret" ? "••••" : n.name;
+  const ownedPods = (() => {
+    if (!graphWithTraffic?.edges?.length || !graphWithTraffic?.nodes?.length) return [];
+    if (!["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"].includes(selected.kind)) return [];
+    const podIds = new Set(
+      graphWithTraffic.edges
+        .filter(e => e.type === "owns" && e.source === selected.id)
+        .map(e => e.target),
+    );
+    return graphWithTraffic.nodes
+      .filter(n => n.kind === "Pod" && podIds.has(n.id))
+      .slice(0, 30);
+  })();
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -183,6 +195,41 @@ export function DetailPanel({
                   İlgili {selected.kind === "Deployment" ? "ReplicaSet" : "Pod"}: {rolloutNodes.slice(0, 4).map(n => n.name).join(", ")}{rolloutNodes.length > 4 ? " …" : ""}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Workload drilldown: pods */}
+        {ownedPods.length > 0 && (
+          <div style={{ marginTop: 10, marginBottom: 4 }}>
+            <div style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Pods</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {ownedPods.map(p => {
+                const ph = nodeHealthLevel(p.id, issues);
+                return (
+                  <div
+                    key={p.id}
+                    onClick={() => setSelected(p)}
+                    style={{
+                      cursor: "pointer",
+                      background: "#0F172A",
+                      border: `1px solid ${HEALTH_COLORS[ph]}44`,
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ color: "#E2E8F0", fontSize: 11, fontWeight: 700, wordBreak: "break-all" }}>{p.name}</div>
+                      <div style={{ color: HEALTH_COLORS[ph], fontSize: 10, fontFamily: "monospace" }}>{ph}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 4, fontSize: 10, color: "#64748B" }}>
+                      <span>status: <span style={{ color: "#94A3B8" }}>{p.status || "—"}</span></span>
+                      {p.restarts ? <span>restarts: <span style={{ color: "#FCD34D" }}>{p.restarts}</span></span> : null}
+                      {p.nodeName ? <span>node: <span style={{ color: "#94A3B8" }}>{p.nodeName}</span></span> : null}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
